@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::process;
 use std::process::Command;
@@ -1618,6 +1619,8 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
 
+            let mut visited_branches = HashSet::new();
+
             for branch_name in &branches {
                 if branch_name == &root_branch {
                     eprintln!(
@@ -1645,6 +1648,16 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                     }
                     BranchSearchResult::NotPartOfAnyChain(_) => {}
                 }
+
+                if visited_branches.contains(branch_name) {
+                    eprintln!(
+                        "Branch defined on the chain at least twice: {}",
+                        branch_name.bold()
+                    );
+                    eprintln!("Branches should be unique when setting up a new chain.");
+                    process::exit(1);
+                }
+                visited_branches.insert(branch_name);
             }
 
             for branch_name in &branches {
