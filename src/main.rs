@@ -1215,17 +1215,6 @@ impl GitChain {
         Ok(())
     }
 
-    fn merge_base(&self, ancestor_branch: &str, descendant_branch: &str) -> Result<Oid, Error> {
-        let (ancestor_object, _reference) = self.repo.revparse_ext(ancestor_branch)?;
-        let (descendant_object, _reference) = self.repo.revparse_ext(descendant_branch)?;
-
-        let common_point = self
-            .repo
-            .merge_base(ancestor_object.id(), descendant_object.id())?;
-
-        Ok(common_point)
-    }
-
     fn merge_base_fork_point(
         &self,
         ancestor_branch: &str,
