@@ -64,7 +64,7 @@ To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_d
 
 1. This tool will not create, nor destroy branches for you. You should use `git branch` (or other commands) for that.
 
-2. This tool doesn't attempt to be smart, or make assumptions of what your branching intent looks like.
+2. This tool doesn't attempt to be smart, or make assumptions of what your branching intent looks like. It only understands the chain that you have set up.
 
 # Installation
 
@@ -137,7 +137,10 @@ git chain rename <chain_name>
 
 This tool is largely inspired by [Shopify/git-chain](https://github.com/Shopify/git-chain). In fact, I initially used this tool first, before writing my own version.
 
+You may be interested in exploring these tools that have a richer feature set than `git chain`:
+
 - https://github.com/epage/git-stack
+
 - https://github.com/timothyandrew/gh-stack
 
 # License
