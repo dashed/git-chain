@@ -58,6 +58,8 @@ fork_point=$(git merge-base --fork-point $parent_branch $branch)
 git rebase --onto $parent_branch $fork_point $branch
 ```
 
+The fork-points are generated for each branch before rebasing.
+
 To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_discussion_on_fork_point_mode
 
 # ⚠️⚠️⚠️ What this tool does not do
