@@ -1822,6 +1822,7 @@ fn main() {
         );
 
     let arg_matches = App::new("git-chain")
+        .bin_name(executable_name())
         .version("0.01")
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
