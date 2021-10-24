@@ -8,7 +8,7 @@ use between::Between;
 use clap::{App, Arg, ArgMatches, SubCommand};
 use colored::*;
 use git2::{
-    BranchType, Config, ConfigLevel, Error, ErrorCode, ObjectType, Oid, Repository, RepositoryState,
+    BranchType, Config, ConfigLevel, Error, ErrorCode, ObjectType, Repository, RepositoryState,
 };
 use regex::Regex;
 
