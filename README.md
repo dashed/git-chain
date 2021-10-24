@@ -81,17 +81,18 @@ To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_d
 git chain setup <chain_name> <root_branch> <branch_1> <branch_2> ... <branch_N>
 
 # Add current branch to a chain into the last position.
-git chain init <root_branch> <chain_name>
-git chain init master super_big_feature
+git chain init <chain_name> <root_branch>
+# Example:
+git chain init super_big_feature master
 
-git chain init <root_branch> <chain_name> --before=<other_branch>
-git chain init <root_branch> <chain_name> --after=<other_branch>
-
-# List all chains.
-git chain list
+git chain init <chain_name> <root_branch> --before=<other_branch>
+git chain init <chain_name> <root_branch> --after=<other_branch>
 
 # Display current chain.
 git chain
+
+# List all chains.
+git chain list
 
 # Back up all branches of the current chain.
 # For each branch in the current chain, create new branch with the name: backup-<chain_name>/<branch>

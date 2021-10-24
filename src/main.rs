@@ -764,7 +764,7 @@ impl GitChain {
     fn display_branch_not_part_of_chain_error(&self, branch_name: &str) {
         eprintln!("❌ Branch is not part of any chain: {}", branch_name.bold());
         eprintln!(
-            "To initialize a chain for this branch, run {} init <root_branch> <chain_name>",
+            "To initialize a chain for this branch, run {} init <chain_name> <root_branch>",
             self.executable_name
         );
     }
@@ -1696,14 +1696,14 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("root_branch")
-                .help("The root branch which the chain of branches will merge into.")
+            Arg::with_name("chain_name")
+                .help("The name of the chain.")
                 .required(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("chain_name")
-                .help("The name of the chain.")
+            Arg::with_name("root_branch")
+                .help("The root branch which the chain of branches will merge into.")
                 .required(true)
                 .index(2),
         );
