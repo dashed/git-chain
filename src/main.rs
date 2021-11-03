@@ -969,7 +969,7 @@ impl GitChain {
 
         for (index, branch) in chain.branches.iter().enumerate() {
             if index == 0 {
-                let common_point = self.merge_base_fork_point(&root_branch, &branch.branch_name)?;
+                let common_point = self.smart_merge_base(&root_branch, &branch.branch_name)?;
                 common_ancestors.push(common_point);
                 continue;
             }
@@ -977,7 +977,7 @@ impl GitChain {
             let prev_branch = &chain.branches[index - 1];
 
             let common_point =
-                self.merge_base_fork_point(&prev_branch.branch_name, &branch.branch_name)?;
+                self.smart_merge_base(&prev_branch.branch_name, &branch.branch_name)?;
             common_ancestors.push(common_point);
         }
 
@@ -1213,6 +1213,46 @@ impl GitChain {
             process::exit(1);
         }
         Ok(())
+    }
+
+    fn smart_merge_base(
+        &self,
+        ancestor_branch: &str,
+        descendant_branch: &str,
+    ) -> Result<String, Error> {
+        if self.is_ancestor(ancestor_branch, descendant_branch)? {
+            // Can "fast forward" from ancestor_branch to descendant_branch
+            return self.merge_base(ancestor_branch, descendant_branch);
+        }
+        self.merge_base_fork_point(ancestor_branch, descendant_branch)
+    }
+
+    fn merge_base(&self, ancestor_branch: &str, descendant_branch: &str) -> Result<String, Error> {
+        // git merge-base <ancestor_branch> <descendant_branch>
+
+        let output = Command::new("git")
+            .arg("merge-base")
+            .arg(&ancestor_branch)
+            .arg(&descendant_branch)
+            .output()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Unable to get common ancestor of {} and {}",
+                    ancestor_branch.bold(),
+                    descendant_branch.bold()
+                )
+            });
+
+        if output.status.success() {
+            let raw_output = String::from_utf8(output.stdout).unwrap();
+            let common_point = raw_output.trim().to_string();
+            return Ok(common_point);
+        }
+        return Err(Error::from_str(&format!(
+            "Unable to get common ancestor of {} and {}",
+            ancestor_branch.bold(),
+            descendant_branch.bold()
+        )));
     }
 
     fn merge_base_fork_point(
@@ -1846,7 +1886,7 @@ fn main() {
 
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
-        .version("0.02")
+        .version("0.03")
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
         .subcommand(init_subcommand)
