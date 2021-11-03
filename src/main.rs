@@ -89,8 +89,8 @@ fn print_rebase_error(executable_name: &str, branch: &str, upstream_branch: &str
         upstream_branch.bold()
     );
     eprintln!(
-        "{}  Resolve any rebase merge conflicts, and then run {} rebase",
-        "⚠️", executable_name
+        "⚠️  Resolve any rebase merge conflicts, and then run {} rebase",
+        executable_name
     );
 }
 
