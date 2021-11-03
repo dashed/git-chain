@@ -1330,13 +1330,36 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
         ("init", Some(sub_matches)) => {
             // Initialize the current branch to a chain.
 
-            let root_branch = sub_matches.value_of("root_branch").unwrap().to_string();
             let chain_name = sub_matches.value_of("chain_name").unwrap().to_string();
+            let root_branch = sub_matches.value_of("root_branch");
 
             let before_branch = sub_matches.value_of("before");
             let after_branch = sub_matches.value_of("after");
 
             let branch_name = git_chain.get_current_branch_name()?;
+
+            let root_branch = if Chain::chain_exists(&git_chain, &chain_name)? {
+                // Derive root branch from an existing chain
+                let chain = Chain::get_chain(&git_chain, &chain_name)?;
+
+                if let Some(user_provided_root_branch) = root_branch {
+                    if user_provided_root_branch != chain.root_branch {
+                        println!(
+                            "Using root branch {} of chain {} instead of {}",
+                            chain.root_branch.bold(),
+                            chain_name.bold(),
+                            user_provided_root_branch.bold()
+                        );
+                    }
+                }
+
+                chain.root_branch
+            } else if let Some(root_branch) = root_branch {
+                root_branch.to_string()
+            } else {
+                eprintln!("Please provide the root branch.");
+                process::exit(1);
+            };
 
             if !git_chain.git_branch_exists(&root_branch)? {
                 eprintln!("Root branch does not exist: {}", root_branch.bold());
@@ -1704,7 +1727,7 @@ fn main() {
         .arg(
             Arg::with_name("root_branch")
                 .help("The root branch which the chain of branches will merge into.")
-                .required(true)
+                .required(false)
                 .index(2),
         );
 
