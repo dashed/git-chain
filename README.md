@@ -88,6 +88,8 @@ git chain init super_big_feature master
 git chain init <chain_name> <root_branch> --before=<other_branch>
 git chain init <chain_name> <root_branch> --after=<other_branch>
 
+git chain init <chain_name> <root_branch> --first
+
 # Display current chain.
 git chain
 

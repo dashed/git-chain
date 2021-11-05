@@ -100,6 +100,7 @@ enum BranchSearchResult {
 }
 
 enum SortBranch {
+    First,
     Last,
     Before(Branch),
     After(Branch),
@@ -165,6 +166,10 @@ impl Branch {
             assert!(!chain.branches.is_empty());
 
             let maybe_chain_order = match sort_option {
+                SortBranch::First => {
+                    let first_branch = chain.branches.first().unwrap();
+                    generate_chain_order_before(&first_branch.chain_order)
+                }
                 SortBranch::Last => {
                     let last_branch = chain.branches.last().unwrap();
                     generate_chain_order_after(&last_branch.chain_order)
@@ -1414,8 +1419,11 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
 
-            let sort_option =
-                parse_sort_option(&git_chain, &chain_name, before_branch, after_branch)?;
+            let sort_option = if sub_matches.is_present("first") {
+                SortBranch::First
+            } else {
+                parse_sort_option(&git_chain, &chain_name, before_branch, after_branch)?
+            };
 
             git_chain.init_chain(&chain_name, &root_branch, &branch_name, sort_option)?
         }
@@ -1747,6 +1755,7 @@ fn main() {
                 .value_name("branch_name")
                 .help("Sort current branch before another branch.")
                 .conflicts_with("after")
+                .conflicts_with("first")
                 .takes_value(true),
         )
         .arg(
@@ -1756,7 +1765,17 @@ fn main() {
                 .value_name("branch_name")
                 .help("Sort current branch after another branch.")
                 .conflicts_with("before")
+                .conflicts_with("first")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("first")
+                .short("f")
+                .long("first")
+                .help("Sort current branch as the first branch of the chain.")
+                .conflicts_with("before")
+                .conflicts_with("after")
+                .takes_value(false),
         )
         .arg(
             Arg::with_name("chain_name")
@@ -1886,7 +1905,7 @@ fn main() {
 
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
-        .version("0.03")
+        .version("0.0.4")
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
         .subcommand(init_subcommand)
