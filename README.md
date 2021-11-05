@@ -139,6 +139,7 @@ git chain rename <chain_name>
 
 # Checkout the first branch of the current chain.
 git chain first
+git chain last
 ```
 
 # Other tools

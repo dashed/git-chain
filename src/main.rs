@@ -1771,6 +1771,40 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
+        ("last", Some(_sub_matches)) => {
+            // Switch to the last branch of the chain.
+
+            let branch_name = git_chain.get_current_branch_name()?;
+
+            let current_branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain(_) => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+
+            if Chain::chain_exists(&git_chain, &current_branch.chain_name)? {
+                let chain = Chain::get_chain(&git_chain, &current_branch.chain_name)?;
+                let last_branch = chain.branches.last().unwrap();
+
+                if current_branch.branch_name == last_branch.branch_name {
+                    println!(
+                        "Already on the last branch of the chain {}",
+                        current_branch.chain_name.bold()
+                    );
+                    return Ok(());
+                }
+
+                git_chain.checkout_branch(&last_branch.branch_name)?;
+
+                println!("Switched to branch: {}", last_branch.branch_name.bold());
+            } else {
+                eprintln!("Unable to find chain.");
+                eprintln!("Chain does not exist: {}", current_branch.chain_name.bold());
+                process::exit(1);
+            }
+        }
         _ => {
             git_chain.run_status()?;
         }
@@ -1957,6 +1991,7 @@ fn main() {
         .subcommand(
             SubCommand::with_name("first").about("Switch to the first branch of the chain."),
         )
+        .subcommand(SubCommand::with_name("last").about("Switch to the last branch of the chain."))
         .get_matches_from(std::env::args_os());
 
     match run(arg_matches) {
