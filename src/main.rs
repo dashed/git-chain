@@ -1737,6 +1737,40 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let current_branch = git_chain.get_current_branch_name()?;
             chain.display_list(&git_chain, &current_branch)?;
         }
+        ("first", Some(_sub_matches)) => {
+            // Switch to the first branch of the chain.
+
+            let branch_name = git_chain.get_current_branch_name()?;
+
+            let current_branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain(_) => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+
+            if Chain::chain_exists(&git_chain, &current_branch.chain_name)? {
+                let chain = Chain::get_chain(&git_chain, &current_branch.chain_name)?;
+                let first_branch = chain.branches.first().unwrap();
+
+                if current_branch.branch_name == first_branch.branch_name {
+                    println!(
+                        "Already on the first branch of the chain {}",
+                        current_branch.chain_name.bold()
+                    );
+                    return Ok(());
+                }
+
+                git_chain.checkout_branch(&first_branch.branch_name)?;
+
+                println!("Switched to branch: {}", first_branch.branch_name.bold());
+            } else {
+                eprintln!("Unable to find chain.");
+                eprintln!("Chain does not exist: {}", current_branch.chain_name.bold());
+                process::exit(1);
+            }
+        }
         _ => {
             git_chain.run_status()?;
         }
@@ -1915,11 +1949,14 @@ fn main() {
         .subcommand(push_subcommand)
         .subcommand(prune_subcommand)
         .subcommand(setup_subcommand)
+        .subcommand(rename_subcommand)
         .subcommand(SubCommand::with_name("list").about("List all chains."))
         .subcommand(
             SubCommand::with_name("backup").about("Back up all branches of the current chain."),
         )
-        .subcommand(rename_subcommand)
+        .subcommand(
+            SubCommand::with_name("first").about("Switch to the first branch of the chain."),
+        )
         .get_matches_from(std::env::args_os());
 
     match run(arg_matches) {
