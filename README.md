@@ -136,6 +136,9 @@ git chain move --root=<root_branch>
 
 # Rename current chain.
 git chain rename <chain_name>
+
+# Checkout the first branch of the current chain.
+git chain first
 ```
 
 # Other tools
