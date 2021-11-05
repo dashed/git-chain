@@ -141,6 +141,7 @@ git chain rename <chain_name>
 git chain first
 git chain last
 git chain next
+git chain prev
 ```
 
 # Other tools
