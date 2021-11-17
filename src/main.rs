@@ -1188,21 +1188,21 @@ impl GitChain {
                     "Removed the following branches from chain: {}",
                     chain_name.bold()
                 );
+                println!();
 
                 for branch in &pruned_branches {
                     println!("{}", branch);
                 }
 
+                println!();
                 println!(
                     "Pruned {} branches.",
                     format!("{}", pruned_branches.len()).bold()
                 );
 
                 if dry_run {
-                    println!(
-                        "This was a dry-run, no branches pruned for chain: {}",
-                        chain_name.bold()
-                    );
+                    println!();
+                    println!("{}", "This was a dry-run, no branches pruned!".bold());
                 }
             } else if dry_run {
                 println!(
@@ -2066,7 +2066,7 @@ fn main() {
 
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
-        .version("0.0.5")
+        .version("0.0.6")
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
         .subcommand(init_subcommand)
