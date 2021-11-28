@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use git2::{BranchType, IndexAddOption, Oid, Repository};
+use git2::{BranchType, IndexAddOption, ObjectType, Oid, Repository};
 
 pub fn generate_path_to_repo<S>(repo_name: S) -> PathBuf
 where
@@ -97,6 +97,25 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) {
 
     repo.set_head(&("refs/heads/".to_owned() + branch_name))
         .unwrap();
+}
+
+pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
+    repo.revparse_single(&("refs/heads/".to_owned() + branch_name))
+        .is_ok()
+}
+
+pub fn branch_equal(repo: &Repository, branch_name: &str, other_branch: &str) -> bool {
+    let obj = repo
+        .revparse_single(&format!("{}^{{commit}}", branch_name))
+        .unwrap();
+    assert_eq!(obj.kind().unwrap(), ObjectType::Commit);
+
+    let other_obj = repo
+        .revparse_single(&format!("{}^{{commit}}", other_branch))
+        .unwrap();
+    assert_eq!(other_obj.kind().unwrap(), ObjectType::Commit);
+
+    obj.id() == other_obj.id()
 }
 
 pub fn stage_everything(repo: &Repository) -> Oid {
