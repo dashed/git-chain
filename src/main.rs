@@ -922,6 +922,131 @@ impl GitChain {
         Ok(commit.id().to_string())
     }
 
+    fn get_tree_id_from_branch_name(&self, branch_name: &str) -> Result<String, Error> {
+        // tree_id = git rev-parse branch_name^{tree}
+        // let output = Command::new("git")
+        //     .arg("rev-parse")
+        //     .arg(format!("{}^{{tree}}", branch_name))
+        //     .output()
+        //     .unwrap_or_else(|_| panic!("Unable to get tree id of branch {}", branch_name.bold()));
+
+        // if output.status.success() {
+        //     let raw_output = String::from_utf8(output.stdout).unwrap();
+        //     let tree_id = raw_output.trim().to_string();
+        //     return Ok(tree_id);
+        // }
+
+        // return Err(Error::from_str(&format!(
+        //     "Unable to get tree id of branch {}",
+        //     branch_name.bold()
+        // )));
+
+        match self
+            .repo
+            .revparse_single(&format!("{}^{{tree}}", branch_name))
+        {
+            Ok(tree_object) => Ok(tree_object.id().to_string()),
+            Err(_err) => Err(Error::from_str(&format!(
+                "Unable to get tree id of branch {}",
+                branch_name.bold()
+            ))),
+        }
+    }
+
+    fn is_squashed_merged(
+        &self,
+        common_ancestor: &str,
+        parent_branch: &str,
+        current_branch: &str,
+    ) -> Result<bool, Error> {
+        // References:
+        // https://blog.takanabe.tokyo/en/2020/04/remove-squash-merged-local-git-branches/
+        // https://github.com/not-an-aardvark/git-delete-squashed
+
+        // common_ancestor should be pre-computed beforehand, ideally with self.merge_base_fork_point()
+        // common_ancestor is commit sha
+
+        // tree_id = git rev-parse current_branch^{tree}
+        let tree_id = self.get_tree_id_from_branch_name(current_branch)?;
+
+        // dangling_commit_id = git commit-tree tree_id -p common_ancestor -m "Temp commit for checking is_squashed_merged for branch current_branch"
+        let output = Command::new("git")
+            .arg("commit-tree")
+            .arg(&tree_id)
+            .arg("-p")
+            .arg(&common_ancestor)
+            .arg("-m")
+            .arg(format!(
+                "Temp commit for checking is_squashed_merged for branch {}",
+                current_branch
+            ))
+            .output()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Unable to generate commit-tree of branch {}",
+                    current_branch.bold()
+                )
+            });
+
+        let dangling_commit_id = if output.status.success() {
+            let raw_output = String::from_utf8(output.stdout).unwrap();
+            let dangling_commit_id = raw_output.trim().to_string();
+            dangling_commit_id
+        } else {
+            return Err(Error::from_str(&format!(
+                "Unable to generate commit-tree of branch {}",
+                current_branch.bold()
+            )));
+        };
+
+        // output = git cherry parent_branch dangling_commit_id
+        let output = Command::new("git")
+            .arg("cherry")
+            .arg(&parent_branch)
+            .arg(&dangling_commit_id)
+            .output()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Unable to determine if branch {} was squashed and merged into {}",
+                    current_branch.bold(),
+                    parent_branch.bold()
+                )
+            });
+
+        let cherry_output = if output.status.success() {
+            let raw_output = String::from_utf8(output.stdout).unwrap();
+            raw_output.trim().to_string()
+        } else {
+            return Err(Error::from_str(&format!(
+                "Unable to determine if branch {} was squashed and merged into {}",
+                current_branch.bold(),
+                parent_branch.bold()
+            )));
+        };
+
+        let lines: Vec<String> = cherry_output.lines().map(|x| x.to_string()).collect();
+        if lines.is_empty() {
+            return Ok(true);
+        }
+
+        if lines.len() == 1 {
+            // check if output is a single line containing "- dangling_commit_id"
+            let line = &lines[0].trim();
+            let is_squashed_merged = line.starts_with(&format!("- {}", dangling_commit_id));
+            return Ok(is_squashed_merged);
+        }
+
+        for line in lines {
+            if line.trim().starts_with('-') {
+                continue;
+            } else {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
     fn rebase(&self, chain_name: &str, step_rebase: bool) -> Result<(), Error> {
         // invariant: chain_name chain exists
         let chain = Chain::get_chain(self, chain_name)?;
@@ -1013,6 +1138,18 @@ impl GitChain {
             let before_sha1 = self.get_commit_hash_of_head()?;
 
             let common_point = &common_ancestors[index];
+
+            // check if current branch is squashed merged to prev_branch_name
+            if self.is_squashed_merged(common_point, prev_branch_name, &branch.branch_name)? {
+                eprintln!(
+                    "🛑 Branch {} is detected to be squashed and merged onto {}",
+                    &branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+
+                // TODO: provide actionable recommendations for resolving this
+                process::exit(1);
+            }
 
             let command = format!(
                 "git rebase --keep-empty --onto {} {} {}",
