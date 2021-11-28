@@ -101,6 +101,9 @@ pub fn create_commit(repo: &Repository, root_tree_oid: Oid, message: &str) {
 }
 
 pub fn first_commit_all(repo: &Repository, message: &str) {
+    // HEAD should not resolve to anything prior to creating the first commit
+    assert!(repo.head().is_err());
+
     // stage all changes - git add -A *
     let root_tree_oid = stage_everything(repo);
 
@@ -121,6 +124,11 @@ pub fn delete_local_branch(repo: &Repository, branch_name: &str) {
     assert!(!some_branch.is_head());
 
     some_branch.delete().unwrap();
+}
+
+pub fn get_current_branch_name(repo: &Repository) -> String {
+    let head = repo.head().unwrap();
+    head.shorthand().unwrap().to_string()
 }
 
 pub fn create_new_file(path_to_repo: &PathBuf, file_name: &str, file_contents: &[u8]) {
