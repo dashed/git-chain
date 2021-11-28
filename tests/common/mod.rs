@@ -131,9 +131,9 @@ pub fn get_current_branch_name(repo: &Repository) -> String {
     head.shorthand().unwrap().to_string()
 }
 
-pub fn create_new_file(path_to_repo: &PathBuf, file_name: &str, file_contents: &[u8]) {
+pub fn create_new_file(path_to_repo: &Path, file_name: &str, file_contents: &[u8]) {
     // create new file
-    let mut file = File::create(path_to_repo.as_path().join(file_name)).unwrap();
+    let mut file = File::create(path_to_repo.join(file_name)).unwrap();
     file.write_all(file_contents).unwrap();
 }
 
