@@ -201,6 +201,7 @@ where
     }
 
     assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).is_empty());
 
     output
 }
