@@ -1,11 +1,9 @@
 use git2::ConfigLevel;
-use std::fs::File;
-use std::io::prelude::*;
 
 pub mod common;
 use common::{
-    checkout_branch, commit_all, create_branch, delete_local_branch, first_commit_all,
-    generate_path_to_repo, setup_git_repo, teardown_git_repo,
+    checkout_branch, commit_all, create_branch, create_new_file, delete_local_branch,
+    first_commit_all, generate_path_to_repo, setup_git_repo, teardown_git_repo,
 };
 
 #[test]
@@ -21,8 +19,7 @@ fn deleted_branch_config_verification() {
 
     {
         // create new file
-        let mut file = File::create(path_to_repo.as_path().join("hello_world.txt")).unwrap();
-        file.write_all(b"Hello, world!").unwrap();
+        create_new_file(&path_to_repo, "hello_world.txt", b"Hello, world!");
 
         // add first commit to master
         first_commit_all(&repo, "first commit");
@@ -38,9 +35,7 @@ fn deleted_branch_config_verification() {
 
     {
         // create new file
-
-        let mut file = File::create(path_to_repo.as_path().join("file.txt")).unwrap();
-        file.write_all(b"contents").unwrap();
+        create_new_file(&path_to_repo, "file.txt", b"contents");
 
         // add commit to branch some_branch
         commit_all(&repo, "message");
