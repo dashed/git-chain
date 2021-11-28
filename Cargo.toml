@@ -12,3 +12,6 @@ colored = "2.0.0"
 between = "0.1.0"
 rand = "0.8.4"
 regex = "1.5.4"
+
+[dev-dependencies]
+test_bin = "0.3.0"

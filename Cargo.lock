@@ -130,6 +130,7 @@ dependencies = [
  "git2",
  "rand",
  "regex",
+ "test_bin",
 ]
 
 [[package]]
@@ -357,6 +358,12 @@ name = "strsim"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ea5119cdb4c55b55d432abb513a0429384878c15dde60cc77b1c99de1a95a6a"
+
+[[package]]
+name = "test_bin"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1937bab04b0bd0f2c19628d3408fb6dd78faf5aa60f4bdb03212507a9b7314ba"
 
 [[package]]
 name = "textwrap"

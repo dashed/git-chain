@@ -1,6 +1,10 @@
-use git2::{BranchType, IndexAddOption, Oid, Repository};
+use std::ffi::OsStr;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Output;
+
+use git2::{BranchType, IndexAddOption, Oid, Repository};
 
 pub fn generate_path_to_repo<S>(repo_name: S) -> PathBuf
 where
@@ -116,4 +120,44 @@ pub fn delete_local_branch(repo: &Repository, branch_name: &str) {
     assert!(!some_branch.is_head());
 
     some_branch.delete().unwrap();
+}
+
+pub fn run_test_bin_expect_err<I, T>(arguments: I) -> Output
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<OsStr>,
+{
+    let output = test_bin::get_test_bin("git-chain")
+        .args(arguments)
+        .output()
+        .expect("Failed to start git-chain");
+
+    if output.status.success() {
+        io::stdout().write_all(&output.stdout).unwrap();
+        io::stderr().write_all(&output.stderr).unwrap();
+    }
+
+    assert!(!output.status.success());
+
+    output
+}
+
+pub fn run_test_bin_expect_ok<I, T>(arguments: I) -> Output
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<OsStr>,
+{
+    let output = test_bin::get_test_bin("git-chain")
+        .args(arguments)
+        .output()
+        .expect("Failed to start git-chain");
+
+    if !output.status.success() {
+        io::stdout().write_all(&output.stdout).unwrap();
+        io::stderr().write_all(&output.stderr).unwrap();
+    }
+
+    assert!(output.status.success());
+
+    output
 }
