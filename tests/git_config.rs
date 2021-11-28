@@ -2,7 +2,7 @@ use git2::ConfigLevel;
 use std::fs::File;
 use std::io::prelude::*;
 
-mod common;
+pub mod common;
 use common::{
     checkout_branch, commit_all, create_branch, delete_local_branch, first_commit_all,
     generate_path_to_repo, setup_git_repo, teardown_git_repo,

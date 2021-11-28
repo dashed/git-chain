@@ -73,8 +73,8 @@ pub fn stage_everything(repo: &Repository) -> Oid {
     index.write().unwrap();
 
     let mut index = repo.index().unwrap();
-    let root_tree_oid = index.write_tree().unwrap();
-    root_tree_oid
+    // root_tree_oid
+    index.write_tree().unwrap()
 }
 
 pub fn create_first_commit(repo: &Repository, root_tree_oid: Oid, message: &str) {
@@ -101,14 +101,14 @@ pub fn create_commit(repo: &Repository, root_tree_oid: Oid, message: &str) {
 
 pub fn first_commit_all(repo: &Repository, message: &str) {
     // stage all changes - git add -A *
-    let root_tree_oid = stage_everything(&repo);
+    let root_tree_oid = stage_everything(repo);
 
     create_first_commit(repo, root_tree_oid, message);
 }
 
 pub fn commit_all(repo: &Repository, message: &str) {
     // stage all changes - git add -A *
-    let root_tree_oid = stage_everything(&repo);
+    let root_tree_oid = stage_everything(repo);
 
     create_commit(repo, root_tree_oid, message);
 }
