@@ -42,6 +42,14 @@ where
     fs::remove_dir_all(&path_to_repo).ok();
 }
 
+pub fn create_branch(repo: &Repository, branch_name: &str) {
+    // create branch from HEAD
+    let oid = repo.head().unwrap().target().unwrap();
+    let commit = repo.find_commit(oid).unwrap();
+
+    repo.branch(branch_name, &commit, false).unwrap();
+}
+
 pub fn checkout_branch(repo: &Repository, branch_name: &str) {
     let obj = repo
         .revparse_single(&("refs/heads/".to_owned() + branch_name))

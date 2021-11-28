@@ -4,7 +4,8 @@ use std::io::prelude::*;
 
 mod common;
 use common::{
-    checkout_branch, generate_path_to_repo, setup_git_repo, stage_everything, teardown_git_repo,
+    checkout_branch, create_branch, generate_path_to_repo, setup_git_repo, stage_everything,
+    teardown_git_repo,
 };
 
 #[test]
@@ -43,15 +44,8 @@ fn deleted_branch_config_verification() {
     // create and checkout new branch named some_branch
     let branch_name = {
         let branch_name = "some_branch";
-
-        // create branch
-        let oid = repo.head().unwrap().target().unwrap();
-        let commit = repo.find_commit(oid).unwrap();
-
-        repo.branch("some_branch", &commit, false).unwrap();
-
+        create_branch(&repo, branch_name);
         checkout_branch(&repo, branch_name);
-
         branch_name
     };
 
