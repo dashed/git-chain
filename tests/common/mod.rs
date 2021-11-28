@@ -14,7 +14,7 @@ where
     let test_fixture_path = Path::new("./test_sandbox/");
     let path_to_repo = test_fixture_path.join(repo_name);
     assert!(path_to_repo.is_relative());
-    path_to_repo
+    path_to_repo.canonicalize().unwrap()
 }
 
 pub fn setup_git_repo<S>(repo_name: S) -> Repository
