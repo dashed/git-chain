@@ -21,6 +21,18 @@ fn list_subcommand() {
 
     assert_eq!(&get_current_branch_name(&repo), "master");
 
+    let args: Vec<&str> = vec!["list"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+No chains to list.
+To initialize a chain for this branch, run git chain init <root_branch> <chain_name>
+"#
+        .trim_start()
+    );
+
     // create and checkout new branch named not_part_of_any_chain
     {
         let branch_name = "not_part_of_any_chain";
