@@ -80,5 +80,5 @@ chain_name
         .trim_start()
     );
 
-    // teardown_git_repo(repo_name);
+    teardown_git_repo(repo_name);
 }
