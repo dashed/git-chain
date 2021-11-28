@@ -1,4 +1,4 @@
-use git2::{IndexAddOption, Oid, Repository};
+use git2::{BranchType, IndexAddOption, Oid, Repository};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -107,4 +107,13 @@ pub fn commit_all(repo: &Repository, message: &str) {
     let root_tree_oid = stage_everything(&repo);
 
     create_commit(repo, root_tree_oid, message);
+}
+
+pub fn delete_local_branch(repo: &Repository, branch_name: &str) {
+    let mut some_branch = repo.find_branch(branch_name, BranchType::Local).unwrap();
+
+    // Should not be able to delete branch_name if it is the current working tree
+    assert!(!some_branch.is_head());
+
+    some_branch.delete().unwrap();
 }

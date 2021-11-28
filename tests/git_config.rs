@@ -1,11 +1,11 @@
-use git2::{BranchType, ConfigLevel};
+use git2::ConfigLevel;
 use std::fs::File;
 use std::io::prelude::*;
 
 mod common;
 use common::{
-    checkout_branch, commit_all, create_branch, first_commit_all, generate_path_to_repo,
-    setup_git_repo, teardown_git_repo,
+    checkout_branch, commit_all, create_branch, delete_local_branch, first_commit_all,
+    generate_path_to_repo, setup_git_repo, teardown_git_repo,
 };
 
 #[test]
@@ -67,9 +67,7 @@ fn deleted_branch_config_verification() {
     checkout_branch(&repo, "master");
 
     // delete branch some_branch
-    let mut some_branch = repo.find_branch(branch_name, BranchType::Local).unwrap();
-    assert!(!some_branch.is_head());
-    some_branch.delete().unwrap();
+    delete_local_branch(&repo, branch_name);
 
     // verify if local custom config is deleted
     for entry in &local_config.entries(None).unwrap() {
