@@ -150,5 +150,140 @@ chain_name
         .trim_start()
     );
 
+    // create and checkout new branch named some_branch_2.5
+    {
+        checkout_branch(&repo, "some_branch_2");
+        let branch_name = "some_branch_2.5";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "file_2.5.txt", "contents 2.5");
+
+        // add commit to branch some_branch_2.5
+        commit_all(&repo, "message");
+    };
+
+    // Test option: --before=branch
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_2.5");
+
+    let args: Vec<&str> = vec!["init", "chain_name", "--before=some_branch_3"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+🔗 Succesfully set up branch: some_branch_2.5
+
+chain_name
+      some_branch_3 ⦁ 1 ahead ⦁ 1 behind
+    ➜ some_branch_2.5 ⦁ 1 ahead
+      some_branch_2 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    // create and checkout new branch named some_branch_1.5
+    {
+        checkout_branch(&repo, "some_branch_1");
+        let branch_name = "some_branch_1.5";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "file_1.5.txt", "contents 1.5");
+
+        // add commit to branch some_branch_1.5
+        commit_all(&repo, "message");
+    };
+
+    // Test option: --after=branch
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1.5");
+
+    let args: Vec<&str> = vec!["init", "chain_name", "--after=some_branch_1"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+🔗 Succesfully set up branch: some_branch_1.5
+
+chain_name
+      some_branch_3 ⦁ 1 ahead ⦁ 1 behind
+      some_branch_2.5 ⦁ 1 ahead
+      some_branch_2 ⦁ 1 ahead ⦁ 1 behind
+    ➜ some_branch_1.5 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    // create and checkout new branch named some_branch_0
+    {
+        checkout_branch(&repo, "master");
+        let branch_name = "some_branch_0";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "file_0.txt", "contents 0");
+
+        // add commit to branch some_branch_0
+        commit_all(&repo, "message");
+    };
+
+    // Test option: --first
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_0");
+
+    let args: Vec<&str> = vec!["init", "chain_name", "--first"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+🔗 Succesfully set up branch: some_branch_0
+
+chain_name
+      some_branch_3 ⦁ 1 ahead ⦁ 1 behind
+      some_branch_2.5 ⦁ 1 ahead
+      some_branch_2 ⦁ 1 ahead ⦁ 1 behind
+      some_branch_1.5 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead ⦁ 1 behind
+    ➜ some_branch_0 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    // git chain
+    let args: Vec<&str> = vec![];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+On branch: some_branch_0
+
+chain_name
+      some_branch_3 ⦁ 1 ahead ⦁ 1 behind
+      some_branch_2.5 ⦁ 1 ahead
+      some_branch_2 ⦁ 1 ahead ⦁ 1 behind
+      some_branch_1.5 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead ⦁ 1 behind
+    ➜ some_branch_0 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
     teardown_git_repo(repo_name);
 }
