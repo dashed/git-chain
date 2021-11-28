@@ -1,71 +1,11 @@
-use git2::{BranchType, ConfigLevel, IndexAddOption, Oid, Repository};
-use std::fs;
+use git2::{BranchType, ConfigLevel};
 use std::fs::File;
 use std::io::prelude::*;
-use std::path::{Path, PathBuf};
 
-fn generate_path_to_repo<S>(repo_name: S) -> PathBuf
-where
-    S: Into<String>,
-{
-    let repo_name: String = repo_name.into();
-    let test_fixture_path = Path::new("./test_sandbox/");
-    let path_to_repo = test_fixture_path.join(repo_name);
-    assert!(path_to_repo.is_relative());
-    path_to_repo
-}
-
-fn setup_git_repo<S>(repo_name: S) -> Repository
-where
-    S: Into<String>,
-{
-    let path_to_repo = generate_path_to_repo(repo_name);
-
-    fs::remove_dir_all(&path_to_repo).ok();
-    fs::create_dir_all(&path_to_repo).unwrap();
-
-    let repo = match Repository::init(path_to_repo) {
-        Ok(repo) => repo,
-        Err(err) => panic!("failed to init repo: {}", err),
-    };
-
-    let mut config = repo.config().unwrap();
-    config.set_str("user.name", "name").unwrap();
-    config.set_str("user.email", "email").unwrap();
-
-    repo
-}
-
-fn teardown_git_repo<S>(repo_name: S)
-where
-    S: Into<String>,
-{
-    let path_to_repo = generate_path_to_repo(repo_name);
-    fs::remove_dir_all(&path_to_repo).ok();
-}
-
-fn checkout_branch(repo: &Repository, branch_name: &str) {
-    let obj = repo
-        .revparse_single(&("refs/heads/".to_owned() + branch_name))
-        .unwrap();
-
-    repo.checkout_tree(&obj, None).unwrap();
-
-    repo.set_head(&("refs/heads/".to_owned() + branch_name))
-        .unwrap();
-}
-
-fn stage_everything(repo: &Repository) -> Oid {
-    let mut index = repo.index().expect("cannot get the Index file");
-    index
-        .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
-        .unwrap();
-    index.write().unwrap();
-
-    let mut index = repo.index().unwrap();
-    let root_tree_oid = index.write_tree().unwrap();
-    root_tree_oid
-}
+mod common;
+use common::{
+    checkout_branch, generate_path_to_repo, setup_git_repo, stage_everything, teardown_git_repo,
+};
 
 #[test]
 fn deleted_branch_config_verification() {
