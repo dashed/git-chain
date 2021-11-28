@@ -72,3 +72,39 @@ pub fn stage_everything(repo: &Repository) -> Oid {
     let root_tree_oid = index.write_tree().unwrap();
     root_tree_oid
 }
+
+pub fn create_first_commit(repo: &Repository, root_tree_oid: Oid, message: &str) {
+    let tree = repo.find_tree(root_tree_oid).unwrap();
+
+    let author = &repo.signature().unwrap();
+    let committer = &author;
+
+    repo.commit(Some("HEAD"), author, committer, message, &tree, &[])
+        .unwrap();
+}
+
+pub fn create_commit(repo: &Repository, root_tree_oid: Oid, message: &str) {
+    let tree = repo.find_tree(root_tree_oid).unwrap();
+    let head_id = repo.refname_to_id("HEAD").unwrap();
+    let parent = repo.find_commit(head_id).unwrap();
+
+    let author = &repo.signature().unwrap();
+    let committer = &author;
+
+    repo.commit(Some("HEAD"), author, committer, message, &tree, &[&parent])
+        .unwrap();
+}
+
+pub fn first_commit_all(repo: &Repository, message: &str) {
+    // stage all changes - git add -A *
+    let root_tree_oid = stage_everything(&repo);
+
+    create_first_commit(repo, root_tree_oid, message);
+}
+
+pub fn commit_all(repo: &Repository, message: &str) {
+    // stage all changes - git add -A *
+    let root_tree_oid = stage_everything(&repo);
+
+    create_commit(repo, root_tree_oid, message);
+}

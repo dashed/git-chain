@@ -4,8 +4,8 @@ use std::io::prelude::*;
 
 mod common;
 use common::{
-    checkout_branch, create_branch, generate_path_to_repo, setup_git_repo, stage_everything,
-    teardown_git_repo,
+    checkout_branch, commit_all, create_branch, first_commit_all, generate_path_to_repo,
+    setup_git_repo, teardown_git_repo,
 };
 
 #[test]
@@ -19,26 +19,13 @@ fn deleted_branch_config_verification() {
 
     let path_to_repo = generate_path_to_repo(repo_name);
 
-    let root_tree_oid = {
+    {
         // create new file
-
         let mut file = File::create(path_to_repo.as_path().join("hello_world.txt")).unwrap();
         file.write_all(b"Hello, world!").unwrap();
 
-        // stage all changes - git add -A *
-        stage_everything(&repo)
-    };
-
-    // add first commit to master
-    {
-        let tree = repo.find_tree(root_tree_oid).unwrap();
-
-        let author = &repo.signature().unwrap();
-        let committer = &author;
-        let message = "first commit";
-
-        repo.commit(Some("HEAD"), author, committer, message, &tree, &[])
-            .unwrap();
+        // add first commit to master
+        first_commit_all(&repo, "first commit");
     };
 
     // create and checkout new branch named some_branch
@@ -49,28 +36,14 @@ fn deleted_branch_config_verification() {
         branch_name
     };
 
-    let root_tree_oid = {
+    {
         // create new file
 
         let mut file = File::create(path_to_repo.as_path().join("file.txt")).unwrap();
         file.write_all(b"contents").unwrap();
 
-        // stage all changes - git add -A *
-        stage_everything(&repo)
-    };
-
-    // add commit to branch some_branch
-    {
-        let tree = repo.find_tree(root_tree_oid).unwrap();
-        let head_id = repo.refname_to_id("HEAD").unwrap();
-        let parent = repo.find_commit(head_id).unwrap();
-
-        let author = &repo.signature().unwrap();
-        let committer = &author;
-        let message = "message";
-
-        repo.commit(Some("HEAD"), author, committer, message, &tree, &[&parent])
-            .unwrap();
+        // add commit to branch some_branch
+        commit_all(&repo, "message");
     };
 
     // add custom config
