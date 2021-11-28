@@ -190,3 +190,8 @@ where
 
     output
 }
+
+pub fn display_outputs(output: &Output) {
+    io::stdout().write_all(&output.stdout).unwrap();
+    io::stderr().write_all(&output.stderr).unwrap();
+}
