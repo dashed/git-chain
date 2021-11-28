@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::process;
 use std::process::Command;
@@ -2043,7 +2044,11 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn main() {
+fn parse_arg_matches<'a, I, T>(arguments: I) -> ArgMatches<'a>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let init_subcommand = SubCommand::with_name("init")
         .about("Initialize the current branch to a chain.")
         .arg(
@@ -2226,7 +2231,17 @@ fn main() {
         .subcommand(
             SubCommand::with_name("prev").about("Switch to the previous branch of the chain."),
         )
-        .get_matches_from(std::env::args_os());
+        .get_matches_from(arguments);
+
+    arg_matches
+}
+
+fn run_app<I, T>(arguments: I)
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let arg_matches = parse_arg_matches(arguments);
 
     match run(arg_matches) {
         Ok(()) => {}
@@ -2235,4 +2250,8 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn main() {
+    run_app(std::env::args_os());
 }
