@@ -18,6 +18,14 @@ where
     path_to_repo
 }
 
+fn generate_path_to_bare_repo<S>(repo_name: S) -> PathBuf
+where
+    S: Into<String>,
+{
+    let repo_name: String = repo_name.into();
+    generate_path_to_repo(format!("bare_{}.git", repo_name))
+}
+
 pub fn setup_git_repo<S>(repo_name: S) -> Repository
 where
     S: Into<String>,
@@ -39,11 +47,36 @@ where
     repo
 }
 
+pub fn setup_git_bare_repo<S>(repo_name: S) -> Repository
+where
+    S: Into<String>,
+{
+    let path_to_bare_repo = generate_path_to_bare_repo(repo_name);
+
+    fs::remove_dir_all(&path_to_bare_repo).ok();
+    fs::create_dir_all(&path_to_bare_repo).unwrap();
+
+    let repo = match Repository::init_bare(path_to_bare_repo) {
+        Ok(repo) => repo,
+        Err(err) => panic!("failed to init bare repo: {}", err),
+    };
+
+    repo
+}
+
 pub fn teardown_git_repo<S>(repo_name: S)
 where
     S: Into<String>,
 {
     let path_to_repo = generate_path_to_repo(repo_name);
+    fs::remove_dir_all(&path_to_repo).ok();
+}
+
+pub fn teardown_git_bare_repo<S>(repo_name: S)
+where
+    S: Into<String>,
+{
+    let path_to_repo = generate_path_to_bare_repo(repo_name);
     fs::remove_dir_all(&path_to_repo).ok();
 }
 
