@@ -946,7 +946,10 @@ impl GitChain {
             .repo
             .revparse_single(&format!("{}^{{tree}}", branch_name))
         {
-            Ok(tree_object) => Ok(tree_object.id().to_string()),
+            Ok(tree_object) => {
+                assert_eq!(tree_object.kind().unwrap(), ObjectType::Tree);
+                Ok(tree_object.id().to_string())
+            }
             Err(_err) => Err(Error::from_str(&format!(
                 "Unable to get tree id of branch {}",
                 branch_name.bold()
