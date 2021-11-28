@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -14,7 +15,7 @@ where
     let test_fixture_path = Path::new("./test_sandbox/");
     let path_to_repo = test_fixture_path.join(repo_name);
     assert!(path_to_repo.is_relative());
-    path_to_repo.canonicalize().unwrap()
+    path_to_repo
 }
 
 pub fn setup_git_repo<S>(repo_name: S) -> Repository
@@ -122,35 +123,55 @@ pub fn delete_local_branch(repo: &Repository, branch_name: &str) {
     some_branch.delete().unwrap();
 }
 
-pub fn run_test_bin_expect_err<I, T>(arguments: I) -> Output
+pub fn create_new_file(path_to_repo: &PathBuf, file_name: &str, file_contents: &[u8]) {
+    // create new file
+    let mut file = File::create(path_to_repo.as_path().join(file_name)).unwrap();
+    file.write_all(file_contents).unwrap();
+}
+
+pub fn run_test_bin_expect_err<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
 where
     I: IntoIterator<Item = T>,
     T: AsRef<OsStr>,
 {
-    let output = test_bin::get_test_bin("git-chain")
+    let mut current_dir_buf: PathBuf = current_dir.as_ref().into();
+    if current_dir_buf.is_relative() {
+        current_dir_buf = current_dir_buf.canonicalize().unwrap();
+    }
+
+    let output = assert_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        .expect("Failed to get git-chain")
+        .current_dir(current_dir_buf)
         .args(arguments)
         .output()
-        .expect("Failed to start git-chain");
+        .expect("Failed to run git-chain");
 
     if output.status.success() {
         io::stdout().write_all(&output.stdout).unwrap();
         io::stderr().write_all(&output.stderr).unwrap();
     }
 
-    assert!(!output.status.success());
+    assert!(!output.status.success(), "expect err");
 
     output
 }
 
-pub fn run_test_bin_expect_ok<I, T>(arguments: I) -> Output
+pub fn run_test_bin_expect_ok<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
 where
     I: IntoIterator<Item = T>,
     T: AsRef<OsStr>,
 {
-    let output = test_bin::get_test_bin("git-chain")
+    let mut current_dir_buf: PathBuf = current_dir.as_ref().into();
+    if current_dir_buf.is_relative() {
+        current_dir_buf = current_dir_buf.canonicalize().unwrap();
+    }
+
+    let output = assert_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME"))
+        .expect("Failed to get git-chain")
+        .current_dir(current_dir_buf)
         .args(arguments)
         .output()
-        .expect("Failed to start git-chain");
+        .expect("Failed to run git-chain");
 
     if !output.status.success() {
         io::stdout().write_all(&output.stdout).unwrap();

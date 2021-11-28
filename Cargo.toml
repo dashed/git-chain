@@ -14,4 +14,4 @@ rand = "0.8.4"
 regex = "1.5.4"
 
 [dev-dependencies]
-test_bin = "0.3.0"
+assert_cmd = "2.0.2"
