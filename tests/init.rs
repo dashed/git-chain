@@ -12,7 +12,7 @@ fn init_subcommand() {
 
     {
         // create new file
-        create_new_file(&path_to_repo, "hello_world.txt", b"Hello, world!");
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
 
         // add first commit to master
         first_commit_all(&repo, "first commit");

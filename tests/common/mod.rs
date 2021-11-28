@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -131,10 +131,24 @@ pub fn get_current_branch_name(repo: &Repository) -> String {
     head.shorthand().unwrap().to_string()
 }
 
-pub fn create_new_file(path_to_repo: &Path, file_name: &str, file_contents: &[u8]) {
-    // create new file
-    let mut file = File::create(path_to_repo.join(file_name)).unwrap();
-    file.write_all(file_contents).unwrap();
+pub fn create_new_file(path_to_repo: &Path, file_name: &str, file_contents: &str) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path_to_repo.join(file_name))
+        .unwrap();
+
+    writeln!(file, "{}", file_contents).unwrap();
+}
+
+pub fn append_file(path_to_repo: &Path, file_name: &str, file_contents: &str) {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(path_to_repo.join(file_name))
+        .unwrap();
+
+    writeln!(file, "{}", file_contents).unwrap();
 }
 
 pub fn run_test_bin_expect_err<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
