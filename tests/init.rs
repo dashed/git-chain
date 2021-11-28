@@ -47,23 +47,23 @@ fn init_subcommand() {
     assert!(String::from_utf8_lossy(&output.stderr)
         .contains("Current branch cannot be the root branch: master"));
 
-    // create and checkout new branch named some_branch
+    // create and checkout new branch named some_branch_1
     {
-        let branch_name = "some_branch";
+        let branch_name = "some_branch_1";
         create_branch(&repo, branch_name);
         checkout_branch(&repo, branch_name);
     };
 
     {
         // create new file
-        create_new_file(&path_to_repo, "file.txt", "contents");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
 
-        // add commit to branch some_branch
+        // add commit to branch some_branch_1
         commit_all(&repo, "message");
     };
 
     // init subcommand with chain name, and use master as the root branch
-    assert_eq!(&get_current_branch_name(&repo), "some_branch");
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
 
     let args: Vec<&str> = vec!["init", "chain_name", "master"];
     let output = run_test_bin_expect_ok(&path_to_repo, args);
@@ -71,10 +71,80 @@ fn init_subcommand() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         r#"
-🔗 Succesfully set up branch: some_branch
+🔗 Succesfully set up branch: some_branch_1
 
 chain_name
-    ➜ some_branch ⦁ 1 ahead
+    ➜ some_branch_1 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    // create and checkout new branch named some_branch_2
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+
+        // add commit to branch some_branch_2
+        commit_all(&repo, "message");
+    };
+
+    // init subcommand with existing chain name, and use some_branch_1 as the root branch
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_2");
+
+    let args: Vec<&str> = vec!["init", "chain_name", "some_branch_1"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+Using root branch master of chain chain_name instead of some_branch_1
+🔗 Succesfully set up branch: some_branch_2
+
+chain_name
+    ➜ some_branch_2 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    // create and checkout new branch named some_branch_3
+    {
+        let branch_name = "some_branch_3";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+
+        // add commit to branch some_branch_3
+        commit_all(&repo, "message");
+    };
+
+    // init subcommand with existing chain name without any explicit root branch
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_3");
+
+    let args: Vec<&str> = vec!["init", "chain_name"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+🔗 Succesfully set up branch: some_branch_3
+
+chain_name
+    ➜ some_branch_3 ⦁ 1 ahead
+      some_branch_2 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead
       master (root branch)
 "#
         .trim_start()
