@@ -1145,14 +1145,36 @@ impl GitChain {
 
             // check if current branch is squashed merged to prev_branch_name
             if self.is_squashed_merged(common_point, prev_branch_name, &branch.branch_name)? {
-                eprintln!(
-                    "🛑 Branch {} is detected to be squashed and merged onto {}",
+                println!();
+                println!(
+                    "⚠️  Branch {} is detected to be squashed and merged onto {}.",
                     &branch.branch_name.bold(),
                     prev_branch_name.bold()
                 );
 
-                // TODO: provide actionable recommendations for resolving this
-                process::exit(1);
+                let command = format!("git reset --hard {}", &prev_branch_name);
+
+                // git reset --hard <prev_branch_name>
+                let output = Command::new("git")
+                    .arg("reset")
+                    .arg("--hard")
+                    .arg(&prev_branch_name)
+                    .output()
+                    .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+
+                    if !output.status.success() {
+                        eprintln!("Unable to run: {}", &command);
+                        process::exit(1);
+                    }
+
+                println!(
+                    "Resetting branch {} to {}",
+                    &branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+                println!("{}", command);
+
+                continue;
             }
 
             let command = format!(
@@ -1170,6 +1192,7 @@ impl GitChain {
                 .output()
                 .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
 
+            println!();
             println!("{}", command);
 
             // ensure repository is in a clean state
@@ -2211,7 +2234,7 @@ where
 
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
-        .version("0.0.6")
+        .version("0.0.7")
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
         .subcommand(init_subcommand)
