@@ -1,37 +1,13 @@
 use console;
-use std::ffi::OsStr;
-use std::io::{self, Write};
-use std::path::Path;
-use std::process::Output;
 
 use git2::RepositoryState;
 
 pub mod common;
 use common::{
-    checkout_branch, commit_all, create_branch, create_new_file, display_outputs, first_commit_all,
-    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin,
-    run_test_bin_expect_err, run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
+    checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
+    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin_expect_err,
+    run_test_bin_expect_ok, run_test_bin_for_rebase, setup_git_repo, teardown_git_repo,
 };
-
-fn run_test_bin_for_rebase<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
-where
-    I: IntoIterator<Item = T>,
-    T: AsRef<OsStr>,
-{
-    let output = run_test_bin(current_dir, arguments);
-
-    if !output.status.success() {
-        io::stdout().write_all(&output.stdout).unwrap();
-        io::stderr().write_all(&output.stderr).unwrap();
-    }
-
-    assert!(output.status.success());
-
-    // https://git-scm.com/docs/git-rebase#_miscellaneous_differences
-    // git rebase will output to both stdout and stderr.
-
-    output
-}
 
 #[test]
 fn rebase_subcommand_simple() {

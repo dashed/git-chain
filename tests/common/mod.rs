@@ -280,3 +280,23 @@ where
 
     output
 }
+
+pub fn run_test_bin_for_rebase<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<OsStr>,
+{
+    let output = run_test_bin(current_dir, arguments);
+
+    if !output.status.success() {
+        io::stdout().write_all(&output.stdout).unwrap();
+        io::stderr().write_all(&output.stderr).unwrap();
+    }
+
+    assert!(output.status.success());
+
+    // https://git-scm.com/docs/git-rebase#_miscellaneous_differences
+    // git rebase will output to both stdout and stderr.
+
+    output
+}
