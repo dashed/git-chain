@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 pub mod common;
 use common::{
-    checkout_branch, commit_all, create_branch, create_new_file, display_outputs, first_commit_all,
+    checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
     generate_path_to_bare_repo, generate_path_to_repo, get_current_branch_name, run_git_command,
     run_test_bin_expect_ok, setup_git_bare_repo, setup_git_repo, teardown_git_repo,
 };
@@ -235,8 +235,6 @@ Pushed 0 branches.
     // git chain push
     let args: Vec<&str> = vec!["push", "--force"];
     let output = run_test_bin_expect_ok(&path_to_repo, args);
-
-    display_outputs(&output);
 
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
