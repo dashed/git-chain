@@ -9,7 +9,7 @@ use git2::RepositoryState;
 pub mod common;
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, display_outputs, first_commit_all,
-    generate_path_to_repo, get_current_branch_name, git_rebase_continue, run_test_bin,
+    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin,
     run_test_bin_expect_err, run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
 };
 
@@ -378,7 +378,7 @@ chain_name
     assert_eq!(repo.state(), RepositoryState::RebaseInteractive);
 
     commit_all(&repo, "add conflict");
-    git_rebase_continue(&path_to_repo);
+    run_git_command(&path_to_repo, vec!["rebase", "--continue"]);
 
     assert_eq!(repo.state(), RepositoryState::Clean);
     assert_eq!(&get_current_branch_name(&repo), "some_branch_2");

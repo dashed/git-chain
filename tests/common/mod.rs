@@ -186,7 +186,8 @@ pub fn get_current_branch_name(repo: &Repository) -> String {
 pub fn create_new_file(path_to_repo: &Path, file_name: &str, file_contents: &str) {
     let mut file = OpenOptions::new()
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(true)
         .open(path_to_repo.join(file_name))
         .unwrap();
 
@@ -261,23 +262,21 @@ pub fn display_outputs(output: &Output) {
     io::stderr().write_all(&output.stderr).unwrap();
 }
 
-pub fn git_rebase_continue<P: AsRef<Path>>(current_dir: P) -> Output {
+pub fn run_git_command<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<OsStr>,
+{
     let mut current_dir_buf: PathBuf = current_dir.as_ref().into();
     if current_dir_buf.is_relative() {
         current_dir_buf = current_dir_buf.canonicalize().unwrap();
     }
 
-    // git rebase --continue
-    let git_cmd = Command::new("git");
-
-    let output = assert_cmd::Command::from_std(git_cmd)
+    let output = assert_cmd::Command::from_std(Command::new("git"))
         .current_dir(current_dir_buf)
-        .arg("rebase")
-        .arg("--continue")
+        .args(arguments)
         .output()
-        .expect("Failed to run git-chain");
-
-    assert!(output.status.success());
+        .expect("Failed to run git");
 
     output
 }
