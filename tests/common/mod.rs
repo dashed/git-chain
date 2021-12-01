@@ -3,7 +3,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 
 use git2::{BranchType, IndexAddOption, ObjectType, Oid, Repository};
 
@@ -259,4 +259,25 @@ where
 pub fn display_outputs(output: &Output) {
     io::stdout().write_all(&output.stdout).unwrap();
     io::stderr().write_all(&output.stderr).unwrap();
+}
+
+pub fn git_rebase_continue<P: AsRef<Path>>(current_dir: P) -> Output {
+    let mut current_dir_buf: PathBuf = current_dir.as_ref().into();
+    if current_dir_buf.is_relative() {
+        current_dir_buf = current_dir_buf.canonicalize().unwrap();
+    }
+
+    // git rebase --continue
+    let git_cmd = Command::new("git");
+
+    let output = assert_cmd::Command::from_std(git_cmd)
+        .current_dir(current_dir_buf)
+        .arg("rebase")
+        .arg("--continue")
+        .output()
+        .expect("Failed to run git-chain");
+
+    assert!(output.status.success());
+
+    output
 }

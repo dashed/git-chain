@@ -4,11 +4,13 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::process::Output;
 
+use git2::RepositoryState;
+
 pub mod common;
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, display_outputs, first_commit_all,
-    generate_path_to_repo, get_current_branch_name, run_test_bin, run_test_bin_expect_err,
-    run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
+    generate_path_to_repo, get_current_branch_name, git_rebase_continue, run_test_bin,
+    run_test_bin_expect_err, run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
 };
 
 fn run_test_bin_for_rebase<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
@@ -185,7 +187,7 @@ chain_name
         .trim_start()
     );
 
-    // git rebase
+    // git chain rebase
     let args: Vec<&str> = vec!["rebase"];
     let output = run_test_bin_for_rebase(&path_to_repo, args);
 
@@ -254,4 +256,147 @@ chain_name
     );
 
     teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_subcommand_conflict() {
+    let repo_name = "rebase_subcommand_conflict";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+
+        // add first commit to master
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create and checkout new branch named some_branch_1
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+        // create new file
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+
+        // add commit to branch some_branch_1
+        commit_all(&repo, "message");
+    };
+
+    // create and checkout new branch named some_branch_2
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "some_branch_2");
+
+        // create new file
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+
+        // add commit to branch some_branch_2
+        commit_all(&repo, "message");
+    };
+
+    // run git chain setup
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+🔗 Succesfully set up chain: chain_name
+
+chain_name
+    ➜ some_branch_2 ⦁ 1 ahead
+      some_branch_1 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    {
+        // create a conflict
+        checkout_branch(&repo, "some_branch_1");
+        create_new_file(&path_to_repo, "file_2.txt", "conflict");
+        commit_all(&repo, "add conflict");
+    };
+
+    // git chain
+    let args: Vec<&str> = vec![];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+On branch: some_branch_1
+
+chain_name
+      some_branch_2 ⦁ 1 ahead ⦁ 1 behind
+    ➜ some_branch_1 ⦁ 2 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    // git rebase
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    assert_eq!(&get_current_branch_name(&repo), "HEAD");
+
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("Current branch some_branch_1 is up to date"));
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        r#"
+🛑 Unable to completely rebase some_branch_2 to some_branch_1
+⚠️  Resolve any rebase merge conflicts, and then run git chain rebase
+"#
+        .trim_start()
+    );
+
+    assert_eq!(repo.state(), RepositoryState::RebaseInteractive);
+
+    commit_all(&repo, "add conflict");
+    git_rebase_continue(&path_to_repo);
+
+    assert_eq!(repo.state(), RepositoryState::Clean);
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_2");
+
+    // git chain
+    let args: Vec<&str> = vec![];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+On branch: some_branch_2
+
+chain_name
+    ➜ some_branch_2 ⦁ 1 ahead
+      some_branch_1 ⦁ 2 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
 }
