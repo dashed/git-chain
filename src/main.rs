@@ -1162,10 +1162,10 @@ impl GitChain {
                     .output()
                     .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
 
-                    if !output.status.success() {
-                        eprintln!("Unable to run: {}", &command);
-                        process::exit(1);
-                    }
+                if !output.status.success() {
+                    eprintln!("Unable to run: {}", &command);
+                    process::exit(1);
+                }
 
                 println!(
                     "Resetting branch {} to {}",
