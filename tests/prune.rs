@@ -1,6 +1,6 @@
 pub mod common;
 use common::{
-    checkout_branch, commit_all, create_branch, create_new_file, display_outputs, first_commit_all,
+    checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
     generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin_expect_ok,
     run_test_bin_for_rebase, setup_git_repo, teardown_git_repo,
 };
