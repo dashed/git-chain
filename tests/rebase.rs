@@ -175,29 +175,15 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("🎉 Successfully rebased chain chain_name"));
 
-    assert_eq!(
-        console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
-            .trim()
-            .replace("\r", "\n"),
-        "
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_1.
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_1.5.
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_2.
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_2.5.
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_3.
-"
+    let actual = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
         .trim()
-    );
+        .replace("\r", "\n");
+    assert!(actual.contains("Successfully rebased and updated refs/heads/some_branch_1."));
+    assert!(actual.contains("Successfully rebased and updated refs/heads/some_branch_1.5."));
+    assert!(actual.contains("Successfully rebased and updated refs/heads/some_branch_2."));
+    assert!(actual.contains("Successfully rebased and updated refs/heads/some_branch_2.5."));
+
+    assert!(actual.contains("Successfully rebased and updated refs/heads/some_branch_3."));
 
     // git chain
     let args: Vec<&str> = vec![];
@@ -548,16 +534,11 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("To continue rebasing, run git chain rebase --step"));
 
-    assert_eq!(
+    assert!(
         console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
             .trim()
-            .replace("\r", "\n"),
-        "
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_1.
-"
-        .trim()
+            .replace("\r", "\n")
+            .contains("Successfully rebased and updated refs/heads/some_branch_1."),
     );
 
     // git chain
@@ -594,16 +575,11 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("To continue rebasing, run git chain rebase --step"));
 
-    assert_eq!(
+    assert!(
         console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
             .trim()
-            .replace("\r", "\n"),
-        "
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_1.5.
-"
-        .trim()
+            .replace("\r", "\n")
+            .contains("Successfully rebased and updated refs/heads/some_branch_1.5."),
     );
 
     // git chain
@@ -640,16 +616,11 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("To continue rebasing, run git chain rebase --step"));
 
-    assert_eq!(
+    assert!(
         console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
             .trim()
-            .replace("\r", "\n"),
-        "
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_2.
-"
-        .trim()
+            .replace("\r", "\n")
+            .contains("Successfully rebased and updated refs/heads/some_branch_2."),
     );
 
     // git chain
@@ -686,16 +657,11 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("To continue rebasing, run git chain rebase --step"));
 
-    assert_eq!(
+    assert!(
         console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
             .trim()
-            .replace("\r", "\n"),
-        "
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_2.5.
-"
-        .trim()
+            .replace("\r", "\n")
+            .contains("Successfully rebased and updated refs/heads/some_branch_2.5."),
     );
 
     // git chain
@@ -729,16 +695,11 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("🎉 Successfully rebased chain chain_name"));
 
-    assert_eq!(
+    assert!(
         console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
             .trim()
-            .replace("\r", "\n"),
-        "
-Rebasing (1/1)
-
-Successfully rebased and updated refs/heads/some_branch_3.
-"
-        .trim()
+            .replace("\r", "\n")
+            .contains("Successfully rebased and updated refs/heads/some_branch_3."),
     );
 
     // git chain
