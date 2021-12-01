@@ -18,7 +18,7 @@ where
     path_to_repo
 }
 
-fn generate_path_to_bare_repo<S>(repo_name: S) -> PathBuf
+pub fn generate_path_to_bare_repo<S>(repo_name: S) -> PathBuf
 where
     S: Into<String>,
 {
