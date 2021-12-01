@@ -4,7 +4,8 @@ pub mod common;
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
     generate_path_to_bare_repo, generate_path_to_repo, get_current_branch_name, run_git_command,
-    run_test_bin_expect_ok, setup_git_bare_repo, setup_git_repo, teardown_git_repo,
+    run_test_bin_expect_ok, setup_git_bare_repo, setup_git_repo, teardown_git_bare_repo,
+    teardown_git_repo,
 };
 
 #[test]
@@ -126,6 +127,7 @@ Pushed 2 branches.
     );
 
     teardown_git_repo(repo_name);
+    teardown_git_bare_repo(repo_name);
 }
 
 #[test]
@@ -247,4 +249,5 @@ Pushed 2 branches.
     );
 
     teardown_git_repo(repo_name);
+    teardown_git_bare_repo(repo_name);
 }
