@@ -1064,7 +1064,7 @@ impl GitChain {
         // ensure each branch exists
         for branch in &chain.branches {
             if !self.git_branch_exists(&branch.branch_name)? {
-                eprintln!("Root branch does not exist: {}", chain.root_branch.bold());
+                eprintln!("Branch does not exist: {}", branch.branch_name.bold());
                 process::exit(1);
             }
         }
