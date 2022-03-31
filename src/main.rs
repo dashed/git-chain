@@ -760,7 +760,21 @@ impl GitChain {
     }
 
     fn git_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
+        Ok(
+            self.git_local_branch_exists(branch_name)?
+        )
+    }
+
+    fn git_local_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
         match self.repo.find_branch(branch_name, BranchType::Local) {
+            Ok(_branch) => Ok(true),
+            Err(ref e) if e.code() == ErrorCode::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn git_remote_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
+        match self.repo.find_branch(branch_name, BranchType::Remote) {
             Ok(_branch) => Ok(true),
             Err(ref e) if e.code() == ErrorCode::NotFound => Ok(false),
             Err(e) => Err(e),
