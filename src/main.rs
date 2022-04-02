@@ -760,9 +760,8 @@ impl GitChain {
     }
 
     fn git_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
-        Ok(
-            self.git_local_branch_exists(branch_name)? || self.git_remote_branch_exists(branch_name)?
-        )
+        Ok(self.git_local_branch_exists(branch_name)?
+            || self.git_remote_branch_exists(branch_name)?)
     }
 
     fn git_local_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
