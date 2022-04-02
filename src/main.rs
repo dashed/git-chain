@@ -138,7 +138,7 @@ impl Branch {
         if chain_name.is_none()
             || chain_order.is_none()
             || root_branch.is_none()
-            || !git_chain.git_branch_exists(branch_name)?
+            || !git_chain.git_local_branch_exists(branch_name)?
         {
             Branch::delete_all_configs(git_chain, branch_name)?;
             return Ok(BranchSearchResult::NotPartOfAnyChain(
@@ -760,7 +760,21 @@ impl GitChain {
     }
 
     fn git_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
+        Ok(
+            self.git_local_branch_exists(branch_name)? || self.git_remote_branch_exists(branch_name)?
+        )
+    }
+
+    fn git_local_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
         match self.repo.find_branch(branch_name, BranchType::Local) {
+            Ok(_branch) => Ok(true),
+            Err(ref e) if e.code() == ErrorCode::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn git_remote_branch_exists(&self, branch_name: &str) -> Result<bool, Error> {
+        match self.repo.find_branch(branch_name, BranchType::Remote) {
             Ok(_branch) => Ok(true),
             Err(ref e) if e.code() == ErrorCode::NotFound => Ok(false),
             Err(e) => Err(e),
@@ -1063,7 +1077,7 @@ impl GitChain {
 
         // ensure each branch exists
         for branch in &chain.branches {
-            if !self.git_branch_exists(&branch.branch_name)? {
+            if !self.git_local_branch_exists(&branch.branch_name)? {
                 eprintln!("Branch does not exist: {}", branch.branch_name.bold());
                 process::exit(1);
             }
@@ -1476,7 +1490,7 @@ fn parse_sort_option(
     after_branch: Option<&str>,
 ) -> Result<SortBranch, Error> {
     if let Some(before_branch) = before_branch {
-        if !git_chain.git_branch_exists(before_branch)? {
+        if !git_chain.git_local_branch_exists(before_branch)? {
             return Err(Error::from_str(&format!(
                 "Branch does not exist: {}",
                 before_branch.bold()
@@ -1502,7 +1516,7 @@ fn parse_sort_option(
 
         Ok(SortBranch::Before(before_branch))
     } else if let Some(after_branch) = after_branch {
-        if !git_chain.git_branch_exists(after_branch)? {
+        if !git_chain.git_local_branch_exists(after_branch)? {
             return Err(Error::from_str(&format!(
                 "Branch does not exist: {}",
                 after_branch.bold()
@@ -1854,7 +1868,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                     process::exit(1);
                 }
 
-                if !git_chain.git_branch_exists(branch_name)? {
+                if !git_chain.git_local_branch_exists(branch_name)? {
                     eprintln!("Branch does not exist: {}", branch_name.bold());
                     process::exit(1);
                 }
