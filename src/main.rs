@@ -1064,7 +1064,7 @@ impl GitChain {
         Ok(true)
     }
 
-    fn rebase(&self, chain_name: &str, step_rebase: bool) -> Result<(), Error> {
+    fn rebase(&self, chain_name: &str, step_rebase: bool, ignore_root: bool) -> Result<(), Error> {
         // invariant: chain_name chain exists
         let chain = Chain::get_chain(self, chain_name)?;
 
@@ -1146,6 +1146,18 @@ impl GitChain {
             } else {
                 &chain.branches[index - 1].branch_name
             };
+
+            if index == 0 && ignore_root {
+                // Skip the rebase operation for the first branch of the chain.
+                // Essentially, we do not rebase the first branch against the root branch.
+                println!();
+                println!(
+                    "⚠️  Not rebasing branch {} against root branch {}. Skipping.",
+                    &branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+                continue;
+            }
 
             // git rebase --onto <onto> <upstream> <branch>
             // git rebase --onto parent_branch fork_point branch.name
@@ -1262,6 +1274,12 @@ impl GitChain {
             return Ok(());
         }
 
+        if ignore_root {
+            println!(
+                "⚠️ Did not rebase chain against root branch: {}",
+                root_branch.bold()
+            );
+        }
         if num_of_rebase_operations > 0 {
             println!("🎉 Successfully rebased chain {}", chain.name.bold());
         } else {
@@ -1743,7 +1761,8 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             if Chain::chain_exists(&git_chain, &branch.chain_name)? {
                 let step_rebase = sub_matches.is_present("step");
-                git_chain.rebase(&branch.chain_name, step_rebase)?;
+                let ignore_root = sub_matches.is_present("ignore_root");
+                git_chain.rebase(&branch.chain_name, step_rebase, ignore_root)?;
             } else {
                 eprintln!("Unable to rebase chain.");
                 eprintln!("Chain does not exist: {}", branch.chain_name.bold());
@@ -2190,6 +2209,14 @@ where
                 .value_name("step")
                 .help("Stop at the first rebase.")
                 .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("ignore_root")
+                .short("i")
+                .long("ignore-root")
+                .value_name("ignore_root")
+                .help("Rebase each branch of the chain except for the first branch.")
+                .takes_value(false),
         );
 
     let push_subcommand = SubCommand::with_name("push")
@@ -2247,7 +2274,7 @@ where
 
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
-        .version("0.0.7")
+        .version("0.0.8")
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
         .subcommand(init_subcommand)
