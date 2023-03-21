@@ -991,7 +991,7 @@ impl GitChain {
             .arg("commit-tree")
             .arg(&tree_id)
             .arg("-p")
-            .arg(&common_ancestor)
+            .arg(common_ancestor)
             .arg("-m")
             .arg(format!(
                 "Temp commit for checking is_squashed_merged for branch {}",
@@ -1019,7 +1019,7 @@ impl GitChain {
         // output = git cherry parent_branch dangling_commit_id
         let output = Command::new("git")
             .arg("cherry")
-            .arg(&parent_branch)
+            .arg(parent_branch)
             .arg(&dangling_commit_id)
             .output()
             .unwrap_or_else(|_| {
@@ -1171,7 +1171,7 @@ impl GitChain {
                 let output = Command::new("git")
                     .arg("reset")
                     .arg("--hard")
-                    .arg(&prev_branch_name)
+                    .arg(prev_branch_name)
                     .output()
                     .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
 
@@ -1199,8 +1199,8 @@ impl GitChain {
                 .arg("rebase")
                 .arg("--keep-empty")
                 .arg("--onto")
-                .arg(&prev_branch_name)
-                .arg(&common_point)
+                .arg(prev_branch_name)
+                .arg(common_point)
                 .arg(&branch.branch_name)
                 .output()
                 .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
@@ -1414,8 +1414,8 @@ impl GitChain {
 
         let output = Command::new("git")
             .arg("merge-base")
-            .arg(&ancestor_branch)
-            .arg(&descendant_branch)
+            .arg(ancestor_branch)
+            .arg(descendant_branch)
             .output()
             .unwrap_or_else(|_| {
                 panic!(
@@ -1430,11 +1430,11 @@ impl GitChain {
             let common_point = raw_output.trim().to_string();
             return Ok(common_point);
         }
-        return Err(Error::from_str(&format!(
+        Err(Error::from_str(&format!(
             "Unable to get common ancestor of {} and {}",
             ancestor_branch.bold(),
             descendant_branch.bold()
-        )));
+        )))
     }
 
     fn merge_base_fork_point(
@@ -1447,8 +1447,8 @@ impl GitChain {
         let output = Command::new("git")
             .arg("merge-base")
             .arg("--fork-point")
-            .arg(&ancestor_branch)
-            .arg(&descendant_branch)
+            .arg(ancestor_branch)
+            .arg(descendant_branch)
             .output()
             .unwrap_or_else(|_| {
                 panic!(
@@ -1463,11 +1463,11 @@ impl GitChain {
             let common_point = raw_output.trim().to_string();
             return Ok(common_point);
         }
-        return Err(Error::from_str(&format!(
+        Err(Error::from_str(&format!(
             "Unable to get forkpoint of {} and {}",
             ancestor_branch.bold(),
             descendant_branch.bold()
-        )));
+        )))
     }
 
     fn is_ancestor(&self, ancestor_branch: &str, descendant_branch: &str) -> Result<bool, Error> {
