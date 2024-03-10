@@ -4,6 +4,7 @@ use common::{
     generate_path_to_repo, get_current_branch_name, run_test_bin_expect_err,
     run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
 };
+use git2::ConfigLevel;
 
 #[test]
 fn init_subcommand() {
@@ -79,6 +80,58 @@ chain_name
 "#
         .trim_start()
     );
+
+    // verify generated git config values
+    {
+        let repo_config = repo.config().unwrap();
+        let local_config = repo_config.open_level(ConfigLevel::Local).unwrap();
+
+        let branch_name = "some_branch_1";
+        let config_chain_name = format!("branch.{}.chain-name", branch_name);
+        let config_chain_order = format!("branch.{}.chain-order", branch_name);
+        let config_root_branch = format!("branch.{}.root-branch", branch_name);
+
+        assert!(
+            local_config
+                .entries(Some(&config_chain_name))
+                .unwrap()
+                .count()
+                == 1
+        );
+
+        let mut configs = &local_config.entries(Some(&config_chain_name)).unwrap();
+        let config_entry = configs.next().unwrap().unwrap();
+        let config_chain_name_value = config_entry.value().unwrap();
+        assert!(config_chain_name_value == "chain_name");
+
+        assert!(
+            local_config
+                .entries(Some(&config_chain_order))
+                .unwrap()
+                .count()
+                == 1
+        );
+
+        let mut configs = &local_config.entries(Some(&config_chain_order)).unwrap();
+        let config_entry = configs.next().unwrap().unwrap();
+        let config_chain_order_value = config_entry.value().unwrap();
+        assert_eq!(config_chain_order_value.len(), 5);
+        assert!(!config_chain_order_value.contains("!"));
+        assert!(!config_chain_order_value.contains("~"));
+
+        assert!(
+            local_config
+                .entries(Some(&config_root_branch))
+                .unwrap()
+                .count()
+                == 1
+        );
+
+        let mut configs = &local_config.entries(Some(&config_root_branch)).unwrap();
+        let config_entry = configs.next().unwrap().unwrap();
+        let config_root_branch_value = config_entry.value().unwrap();
+        assert!(config_root_branch_value == "master");
+    };
 
     // create and checkout new branch named some_branch_2
     {
