@@ -11,6 +11,7 @@ use colored::*;
 use git2::{
     BranchType, Config, ConfigLevel, Error, ErrorCode, ObjectType, Repository, RepositoryState,
 };
+use rand::Rng;
 use regex::Regex;
 
 fn executable_name() -> String {
@@ -44,26 +45,23 @@ fn generate_chain_order() -> String {
     let between = Between::init();
     let chars = between.chars();
     let chars_length = chars.len();
-    assert!(chars_length >= 2);
+    assert!(chars_length >= 3);
+    let last_chars_index = chars_length - 1;
+
+    // Use character that is not either between.low() or between.high().
+    // This guarantees that the next generated string sorts before or after the string generated in this function.
+    let character_range = 1..=(last_chars_index - 1);
+    let mut rng = rand::thread_rng();
 
     let mut len = 5;
-
     let mut str: Vec<char> = vec![];
 
-    while len >= 2 {
-        let x = rand::random::<f64>();
-        let index = (x * (chars_length as f64)).floor() as usize;
-        str.push(*chars.get(index).unwrap());
+    while len >= 1 {
+        let index: usize = rng.gen_range(character_range.clone());
+        let character_candidate = *chars.get(index).unwrap();
+        str.push(character_candidate);
         len -= 1;
     }
-
-    // add last character that is not between.low()
-    let x = rand::random::<f64>();
-    let range = (chars_length - 2) as f64;
-    let index = ((x * range).floor() as usize) + 1;
-    let last_char = *chars.get(index).unwrap();
-    assert!(last_char != between.low());
-    str.push(last_char);
 
     String::from_iter(str)
 }
