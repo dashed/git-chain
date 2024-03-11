@@ -89,45 +89,55 @@ chain_name
         let branch_name = "some_branch_1";
         let config_chain_name = format!("branch.{}.chain-name", branch_name);
         let config_chain_order = format!("branch.{}.chain-order", branch_name);
+
         let config_root_branch = format!("branch.{}.root-branch", branch_name);
 
-        assert!(
-            local_config
-                .entries(Some(&config_chain_name))
-                .unwrap()
-                .count()
-                == 1
-        );
+        let count = {
+            let mut iter = local_config.entries(Some(&config_chain_name)).unwrap();
+            let mut count = 0;
+            while let Some(_) = iter.next() {
+                count += 1;
+            }
+            count
+        };
 
-        let mut configs = &local_config.entries(Some(&config_chain_name)).unwrap();
+        assert!(count == 1);
+
+        let mut configs = local_config.entries(Some(&config_chain_name)).unwrap();
         let config_entry = configs.next().unwrap().unwrap();
         let config_chain_name_value = config_entry.value().unwrap();
         assert!(config_chain_name_value == "chain_name");
 
-        assert!(
-            local_config
-                .entries(Some(&config_chain_order))
-                .unwrap()
-                .count()
-                == 1
-        );
+        let count = {
+            let mut iter = local_config.entries(Some(&config_chain_order)).unwrap();
+            let mut count = 0;
+            while let Some(_) = iter.next() {
+                count += 1;
+            }
+            count
+        };
 
-        let mut configs = &local_config.entries(Some(&config_chain_order)).unwrap();
+        assert!(count == 1);
+
+        let mut configs = local_config.entries(Some(&config_chain_order)).unwrap();
         let config_entry = configs.next().unwrap().unwrap();
         let config_chain_order_value = config_entry.value().unwrap();
         assert_eq!(config_chain_order_value.len(), 5);
         assert!(!config_chain_order_value.contains("!"));
         assert!(!config_chain_order_value.contains("~"));
 
-        assert!(
-            local_config
-                .entries(Some(&config_root_branch))
-                .unwrap()
-                .count()
-                == 1
-        );
+        let count = {
+            let mut iter = local_config.entries(Some(&config_root_branch)).unwrap();
+            let mut count = 0;
+            while let Some(_) = iter.next() {
+                count += 1;
+            }
+            count
+        };
 
-        let mut configs = &local_config.entries(Some(&config_root_branch)).unwrap();
+        assert!(count == 1);
+
+        let mut configs = local_config.entries(Some(&config_root_branch)).unwrap();
         let config_entry = configs.next().unwrap().unwrap();
         let config_root_branch_value = config_entry.value().unwrap();
         assert!(config_root_branch_value == "master");

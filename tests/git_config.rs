@@ -48,10 +48,13 @@ fn deleted_branch_config_verification() {
     let config_key = format!("branch.{}.chain-name", branch_name);
 
     // verify config_key does not exist yet
-    for entry in &local_config.entries(None).unwrap() {
-        let entry = entry.unwrap();
-        assert_ne!(entry.name().unwrap(), config_key);
-    }
+    local_config
+        .entries(None)
+        .unwrap()
+        .for_each(|entry| {
+            assert_ne!(entry.name().unwrap(), config_key);
+        })
+        .unwrap();
 
     local_config.set_str(&config_key, "chain_name").unwrap();
 
@@ -65,10 +68,13 @@ fn deleted_branch_config_verification() {
     delete_local_branch(&repo, branch_name);
 
     // verify if local custom config is deleted
-    for entry in &local_config.entries(None).unwrap() {
-        let entry = entry.unwrap();
-        assert_ne!(entry.name().unwrap(), config_key);
-    }
+    local_config
+        .entries(None)
+        .unwrap()
+        .for_each(|entry| {
+            assert_ne!(entry.name().unwrap(), config_key);
+        })
+        .unwrap();
 
     teardown_git_repo(repo_name);
 }

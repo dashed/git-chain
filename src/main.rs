@@ -711,8 +711,8 @@ impl GitChain {
     fn get_git_configs_matching_key(&self, regexp: &Regex) -> Result<Vec<(String, String)>, Error> {
         let local_config = self.get_local_git_config()?;
         let mut entries = vec![];
-        for entry in &local_config.entries(None)? {
-            let entry = entry?;
+
+        local_config.entries(None)?.for_each(|entry| {
             if let Some(key) = entry.name() {
                 if regexp.is_match(key) && entry.has_value() {
                     let key = key.to_string();
@@ -720,7 +720,8 @@ impl GitChain {
                     entries.push((key, value));
                 }
             }
-        }
+        })?;
+
         Ok(entries)
     }
 
