@@ -1072,3 +1072,162 @@ chain_name
 
     teardown_git_repo(repo_name);
 }
+
+#[test]
+fn rebase_no_forkpoint() {
+    let repo_name = "rebase_no_forkpoint";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+
+        // add first commit to master
+        first_commit_all(&repo, "first commit");
+
+        assert_eq!(&get_current_branch_name(&repo), "master");
+    };
+
+    // create and checkout new branch named feature_1
+    {
+        let branch_name = "feature_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "feature_1");
+
+        // create new file
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+
+        // add commit to branch feature_1
+        commit_all(&repo, "message");
+    };
+
+    // go back to master branch and add a few commits
+    {
+        checkout_branch(&repo, "master");
+
+        // create new file
+        create_new_file(&path_to_repo, "hello_world2.txt", "Hello, world!");
+
+        // add commit to master
+        commit_all(&repo, "hello_world");
+
+        // create new file
+        create_new_file(&path_to_repo, "hello_world3.txt", "Hello, world!");
+
+        // add commit to master
+        commit_all(&repo, "hello_world");
+
+        assert_eq!(&get_current_branch_name(&repo), "master");
+    };
+
+    // // check out HEAD~2
+    // {
+    //     let commit = repo
+    //         .find_commit(repo.head().unwrap().target().unwrap())
+    //         .unwrap();
+    //     let parent = commit.parent(0).unwrap();
+    //     let parent = parent.parent(0).unwrap();
+    //     repo.set_head_detached(parent.id()).unwrap();
+    // };
+
+    // create and checkout new branch named feature_2
+    {
+        let branch_name = "feature_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "feature_2");
+
+        // create new file
+        create_new_file(&path_to_repo, "file_2.txt", "contents 1");
+
+        // add commit to branch feature_1
+        commit_all(&repo, "message");
+    };
+
+    // run git chain setup
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "feature_1", "feature_2"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+🔗 Succesfully set up chain: chain_name
+
+chain_name
+    ➜ feature_2 ⦁ 3 ahead ⦁ 1 behind
+      feature_1 ⦁ 1 ahead ⦁ 2 behind
+      master (root branch)
+"#
+        .trim_start(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    // This prevents a fork point between feature_1 and master from being found.
+    let output = run_git_command(
+        &path_to_repo,
+        vec!["reflog", "expire", "--all", "--expire=all"],
+    );
+    assert!(output.status.success());
+
+    // assert that there is no fork point between feature_1 and master
+    let output = run_git_command(
+        &path_to_repo,
+        vec!["merge-base", "--fork-point", "master", "feature_1"],
+    );
+    assert!(!output.status.success());
+    assert_eq!(output.status.code().unwrap(), 1);
+
+    // git chain rebase
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("🎉 Successfully rebased chain chain_name"));
+
+    let actual = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .replace("\r", "\n");
+
+    // Successfully rebased and updated refs/heads/feature_1.
+    // dropping 408c36d18367659844a8d55411831e32c452b217 hello_world -- patch contents already upstream
+    // dropping 7e78446b248d162cdc7de3c1aaec9455c642adda hello_world -- patch contents already upstream
+    // Successfully rebased and updated refs/heads/feature_2.
+    assert!(actual.contains("Successfully rebased and updated refs/heads/feature_1."));
+    assert!(actual.contains("Successfully rebased and updated refs/heads/feature_2."));
+    assert!(actual.contains("hello_world -- patch contents already upstream"));
+    assert!(
+        actual
+            .matches("hello_world -- patch contents already upstream")
+            .count()
+            == 2
+    );
+    assert!(actual.matches("dropping").count() == 2);
+
+    // git chain
+    let args: Vec<&str> = vec![];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        r#"
+On branch: feature_2
+
+chain_name
+    ➜ feature_2 ⦁ 1 ahead
+      feature_1 ⦁ 1 ahead
+      master (root branch)
+"#
+        .trim_start()
+    );
+
+    teardown_git_repo(repo_name);
+}
