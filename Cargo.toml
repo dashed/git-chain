@@ -10,7 +10,7 @@ git2 = "0.18.2"
 clap = "2.33.3"
 colored = "2.0.0"
 between = "0.1.0"
-rand = "0.8.4"
+rand = "0.8.5"
 regex = "1.5.4"
 
 [dev-dependencies]
