@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 git2 = "0.18.3"
-clap = "2.33.3"
+clap = "4.5.7"
 colored = "2.1.0"
 between = "0.1.0"
 rand = "0.8.5"
