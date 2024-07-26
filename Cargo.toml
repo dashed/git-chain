@@ -14,5 +14,5 @@ rand = "0.8.5"
 regex = "1.10.5"
 
 [dev-dependencies]
-assert_cmd = "2.0.14"
+assert_cmd = "2.0.15"
 console = "0.15.8"
