@@ -15,4 +15,4 @@ regex = "1.11.1"
 
 [dev-dependencies]
 assert_cmd = "2.0.16"
-console = "0.15.8"
+console = "0.15.10"
