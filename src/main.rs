@@ -93,6 +93,18 @@ fn print_rebase_error(executable_name: &str, branch: &str, upstream_branch: &str
     );
 }
 
+fn print_merge_error(executable_name: &str, branch: &str, upstream_branch: &str) {
+    eprintln!(
+        "🛑 Unable to completely merge {} to {}",
+        branch.bold(),
+        upstream_branch.bold()
+    );
+    eprintln!(
+        "⚠️  Resolve any merge conflicts, and then run {} merge",
+        executable_name
+    );
+}
+
 enum BranchSearchResult {
     NotPartOfAnyChain(String),
     Branch(Branch),
@@ -1288,6 +1300,207 @@ impl GitChain {
         Ok(())
     }
 
+    fn merge(&self, chain_name: &str, ignore_root: bool) -> Result<(), Error> {
+        // invariant: chain_name chain exists
+        let chain = Chain::get_chain(self, chain_name)?;
+
+        // ensure root branch exists
+        if !self.git_branch_exists(&chain.root_branch)? {
+            eprintln!("Root branch does not exist: {}", chain.root_branch.bold());
+            process::exit(1);
+        }
+
+        // ensure each branch exists
+        for branch in &chain.branches {
+            if !self.git_local_branch_exists(&branch.branch_name)? {
+                eprintln!("Branch does not exist: {}", branch.branch_name.bold());
+                process::exit(1);
+            }
+        }
+
+        // ensure repository is in a clean state
+        match self.repo.state() {
+            RepositoryState::Clean => {
+                // go ahead to merge.
+            }
+            _ => {
+                eprintln!("🛑 Repository needs to be in a clean state before merging.");
+                process::exit(1);
+            }
+        }
+
+        if self.dirty_working_directory()? {
+            eprintln!(
+                "🛑 Unable to merge branches for the chain: {}",
+                chain.name.bold()
+            );
+            eprintln!("You have uncommitted changes in your working directory.");
+            eprintln!("Please commit or stash them.");
+            process::exit(1);
+        }
+
+        let orig_branch = self.get_current_branch_name()?;
+
+        let root_branch = chain.root_branch;
+
+        // List of common ancestors between each branch and its parent branch.
+        // For the first branch, a common ancestor is generated between it and the root branch.
+        //
+        // The following command is used to generate the common ancestors:
+        // git merge-base --fork-point <ancestor_branch> <descendant_branch>
+        let mut common_ancestors = vec![];
+
+        for (index, branch) in chain.branches.iter().enumerate() {
+            if index == 0 {
+                let common_point = self.smart_merge_base(&root_branch, &branch.branch_name)?;
+                common_ancestors.push(common_point);
+                continue;
+            }
+
+            let prev_branch = &chain.branches[index - 1];
+
+            let common_point =
+                self.smart_merge_base(&prev_branch.branch_name, &branch.branch_name)?;
+            common_ancestors.push(common_point);
+        }
+
+        assert_eq!(chain.branches.len(), common_ancestors.len());
+
+        let mut num_of_merge_operations = 0;
+
+        for (index, branch) in chain.branches.iter().enumerate() {
+            let prev_branch_name = if index == 0 {
+                &root_branch
+            } else {
+                &chain.branches[index - 1].branch_name
+            };
+
+            if index == 0 && ignore_root {
+                // Skip the merge operation for the first branch of the chain.
+                // Essentially, we do not merge the first branch against the root branch.
+                println!();
+                println!(
+                    "⚠️  Not merging branch {} against root branch {}. Skipping.",
+                    &branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+                continue;
+            }
+
+            // git merge <upstream> <branch>
+            // git merge prev_branch branch.name
+
+            self.checkout_branch(&branch.branch_name)?;
+
+            let before_sha1 = self.get_commit_hash_of_head()?;
+
+            let common_point = &common_ancestors[index];
+
+            // check if current branch is squashed merged to prev_branch_name
+            if self.is_squashed_merged(common_point, prev_branch_name, &branch.branch_name)? {
+                println!();
+                println!(
+                    "⚠️  Branch {} is detected to be squashed and merged onto {}.",
+                    &branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+
+                let command = format!("git reset --hard {}", &prev_branch_name);
+
+                // git reset --hard <prev_branch_name>
+                let output = Command::new("git")
+                    .arg("reset")
+                    .arg("--hard")
+                    .arg(prev_branch_name)
+                    .output()
+                    .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+
+                if !output.status.success() {
+                    eprintln!("Unable to run: {}", &command);
+                    process::exit(1);
+                }
+
+                println!(
+                    "Resetting branch {} to {}",
+                    &branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+                println!("{}", command);
+
+                continue;
+            }
+
+            let command = format!(
+                "git merge {} {}",
+                &prev_branch_name, &branch.branch_name
+            );
+
+            let output = Command::new("git")
+                .arg("merge")
+                .arg(prev_branch_name)
+                .arg(&branch.branch_name)
+                .output()
+                .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+
+            println!();
+            println!("{}", command);
+
+            // ensure repository is in a clean state
+            match self.repo.state() {
+                RepositoryState::Clean => {
+                    if !output.status.success() {
+                        eprintln!("Command returned non-zero exit status: {}", command);
+                        eprintln!("It returned: {}", output.status.code().unwrap());
+                        io::stdout().write_all(&output.stdout).unwrap();
+                        io::stderr().write_all(&output.stderr).unwrap();
+                        process::exit(1);
+                    }
+                    io::stdout().write_all(&output.stdout).unwrap();
+                    io::stderr().write_all(&output.stderr).unwrap();
+
+                    let after_sha1 = self.get_commit_hash_of_head()?;
+
+                    if before_sha1 != after_sha1 {
+                        num_of_merge_operations += 1;
+                    }
+                    // go ahead to merge next branch.
+                }
+                _ => {
+                    print_merge_error(
+                        &self.executable_name,
+                        &branch.branch_name,
+                        prev_branch_name,
+                    );
+                    process::exit(1);
+                }
+            }
+        }
+
+        let current_branch = self.get_current_branch_name()?;
+
+        if current_branch != orig_branch {
+            println!();
+            println!("Switching back to branch: {}", orig_branch.bold());
+            self.checkout_branch(&orig_branch)?;
+        }
+
+        println!();
+
+        if ignore_root {
+            println!(
+                "⚠️ Did not merge chain against root branch: {}",
+                root_branch.bold()
+            );
+        }
+        if num_of_merge_operations > 0 {
+            println!("🎉 Successfully merged chain {}", chain.name.bold());
+        } else {
+            println!("Chain {} is already up-to-date.", chain.name.bold());
+        }
+
+        Ok(())
+    }
+
     fn dirty_working_directory(&self) -> Result<bool, Error> {
         // perform equivalent to git diff-index HEAD
         let obj = self.repo.revparse_single("HEAD")?;
@@ -1773,6 +1986,27 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
+        ("merge", Some(sub_matches)) => {
+            // Merge all branches for the current chain.
+            let branch_name = git_chain.get_current_branch_name()?;
+
+            let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain(_) => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+
+            if Chain::chain_exists(&git_chain, &branch.chain_name)? {
+                let ignore_root = sub_matches.is_present("ignore_root");
+                git_chain.merge(&branch.chain_name, ignore_root)?;
+            } else {
+                eprintln!("Unable to merge chain.");
+                eprintln!("Chain does not exist: {}", branch.chain_name.bold());
+                process::exit(1);
+            }
+        }
         ("backup", Some(_sub_matches)) => {
             // Back up all branches of the current chain.
 
@@ -2223,6 +2457,17 @@ where
                 .takes_value(false),
         );
 
+    let merge_subcommand = SubCommand::with_name("merge")
+        .about("Merge all branches for the current chain.")
+        .arg(
+            Arg::with_name("ignore_root")
+                .short("i")
+                .long("ignore-root")
+                .value_name("ignore_root")
+                .help("Merge each branch of the chain except for the first branch.")
+                .takes_value(false),
+        );
+
     let push_subcommand = SubCommand::with_name("push")
         .about("Push all branches of the current chain to their upstreams.")
         .arg(
@@ -2285,6 +2530,7 @@ where
         .subcommand(remove_subcommand)
         .subcommand(move_subcommand)
         .subcommand(rebase_subcommand)
+        .subcommand(merge_subcommand)
         .subcommand(push_subcommand)
         .subcommand(prune_subcommand)
         .subcommand(setup_subcommand)
