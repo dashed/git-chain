@@ -73,7 +73,7 @@ To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_d
 1. Install `cargo` and `rust`: https://rustup.rs
 2. Checkout this repository and run `cargo build --release`
 3. Copy `target/release/git-chain` to your path. (e.g. `cp target/release/git-chain /usr/local/bin/`)
-4. Create a git alias for `git-chain`: `git config --global alias.chain "!git-chain"`
+4. Create a git alias for `git-chain`: `git config --global alias.chain "!git-chain"` (or you can avoid copying the binary to /usr/local/bin and alias directly to the build product by running `git config --global alias.chain "!/path/to/.../target/release/git-chain"`)
 
 ## Usage
 
