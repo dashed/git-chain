@@ -18,9 +18,9 @@ Pulling in new changes on the `master` branch, and then rebasing `feature-1` and
 
 With `git-chain`, you can automate the rebasing steps by setting up the chain `feature-1` and `feature-2` with `master` as the root branch:
 
-1. `git chain setup big-feature master feature-1 feature-2`
+1. `git-chain setup big-feature master feature-1 feature-2`
 2. `git checkout feature-2` (switch into any branch of the `big-feature` chain)
-3. `git chain rebase`
+3. `git-chain rebase`
 
 `git-chain` can also rebase all the branches of the chain if you add commits in any branch in the chain:
 
@@ -36,7 +36,7 @@ This tool was built to solve the following Stack Overflow question: https://stac
 
 # Concepts
 
-A **chain** (or a "git chain") consists of the **root branch**, and **branches** that branch off of other branches containing incremental changes of a large feature.
+A **chain** (or a "git-chain") consists of the **root branch**, and **branches** that branch off of other branches containing incremental changes of a large feature.
 
 The **root branch** is the branch of which the chain of branches will merge into. Typically the **root branch** is `master` or `main`.
 
@@ -49,7 +49,7 @@ The "chain" as defined can also be called "stacked branches" in other tools. See
 
 ## Rebase strategy
 
-`git chain` will rebase branches of the chain in the order that they are defined. For each branch, a _fork-point_ is generated with `git merge-base --fork-point` between the branch and the branch's parent (its dependency). The parent of the first branch of the chain is the root branch.
+`git-chain` will rebase branches of the chain in the order that they are defined. For each branch, a _fork-point_ is generated with `git merge-base --fork-point` between the branch and the branch's parent (its dependency). The parent of the first branch of the chain is the root branch.
 
 The rebase is applied in the following way for each branch:
 
@@ -73,6 +73,7 @@ To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_d
 1. Install `cargo` and `rust`: https://rustup.rs
 2. Checkout this repository and run `cargo build --release`
 3. Copy `target/release/git-chain` to your path. (e.g. `cp target/release/git-chain /usr/local/bin/`)
+4. Create a git alias for `git-chain`: `git config --global alias.chain "!git-chain"` (or you can avoid copying the binary to /usr/local/bin and alias directly to the build product by running `git config --global alias.chain "!/path/to/.../target/release/git-chain"`)
 
 ## Usage
 
@@ -148,7 +149,7 @@ git chain prev
 
 This tool is largely inspired by [Shopify/git-chain](https://github.com/Shopify/git-chain). In fact, I initially used this tool first, before writing my own version.
 
-You may be interested in exploring these tools that have a richer feature set than `git chain`:
+You may be interested in exploring these tools that have a richer feature set than `git-chain`:
 
 - https://github.com/epage/git-stack
 
