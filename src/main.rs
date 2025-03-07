@@ -1064,46 +1064,15 @@ impl GitChain {
     }
 
     fn rebase(&self, chain_name: &str, step_rebase: bool, ignore_root: bool) -> Result<(), Error> {
-        // invariant: chain_name chain exists
+        switch (self.preliminary_checks(chain_name)) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::from_str(&format!("🛑 Unable to rebase chain: {}", chain_name)));
+            }
+        }
+
         let chain = Chain::get_chain(self, chain_name)?;
-
-        // ensure root branch exists
-        if !self.git_branch_exists(&chain.root_branch)? {
-            eprintln!("Root branch does not exist: {}", chain.root_branch.bold());
-            process::exit(1);
-        }
-
-        // ensure each branch exists
-        for branch in &chain.branches {
-            if !self.git_local_branch_exists(&branch.branch_name)? {
-                eprintln!("Branch does not exist: {}", branch.branch_name.bold());
-                process::exit(1);
-            }
-        }
-
-        // ensure repository is in a clean state
-        match self.repo.state() {
-            RepositoryState::Clean => {
-                // go ahead to rebase.
-            }
-            _ => {
-                eprintln!("🛑 Repository needs to be in a clean state before rebasing.");
-                process::exit(1);
-            }
-        }
-
-        if self.dirty_working_directory()? {
-            eprintln!(
-                "🛑 Unable to rebase branches for the chain: {}",
-                chain.name.bold()
-            );
-            eprintln!("You have uncommitted changes in your working directory.");
-            eprintln!("Please commit or stash them.");
-            process::exit(1);
-        }
-
         let orig_branch = self.get_current_branch_name()?;
-
         let root_branch = chain.root_branch;
 
         // List of common ancestors between each branch and its parent branch.
@@ -1501,6 +1470,93 @@ impl GitChain {
             .merge_base(ancestor_object.id(), descendant_object.id())?;
 
         Ok(common_point == ancestor_object.id())
+    }
+
+    fn preliminary_checks(&self, chain_name: &str) -> Result<(), Error> {
+        if !Chain::chain_exists(self, chain_name)? {
+            return Err(Error::from_str(&format!("Chain {} does not exist", chain_name)));
+        }
+        
+        // invariant: chain_name chain exists
+        let chain = Chain::get_chain(self, chain_name)?;
+
+        // ensure root branch exists
+        if !self.git_branch_exists(&chain.root_branch)? {
+            return Err(Error::from_str(&format!("Root branch does not exist: {}", chain.root_branch.bold())));
+        }
+
+        // ensure each branch exists
+        for branch in &chain.branches {
+            if !self.git_local_branch_exists(&branch.branch_name)? {
+                return Err(Error::from_str(&format!("Branch does not exist: {}", branch.branch_name.bold())));
+            }
+        }
+
+        // ensure repository is in a clean state
+        match self.repo.state() {
+            RepositoryState::Clean => {
+                // safe to proceed
+            }
+            _ => {
+                return Err(Error::from_str(&format!("Repository needs to be in a clean state before merging.")));
+            }
+        }
+
+        if self.dirty_working_directory()? {
+            return Err(Error::from_str(&format!("You have uncommitted changes in your working directory.")));
+        }
+
+        Ok(())
+    }
+
+    fn merge_chain(&self, chain_name: &str) -> Result<(), Error> {
+        switch (self.preliminary_checks(chain_name)) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::from_str(&format!("🛑 Unable to merge chain {}: {}", chain_name, e)));
+            }
+        }
+
+        let chain = Chain::get_chain(self, chain_name)?;
+        let orig_branch = self.get_current_branch_name()?;
+
+        let mut previous_branch = &chain.root_branch;
+
+        for branch in &chain.branches {
+            self.checkout_branch(&branch.branch_name)?;
+
+            let command = format!("git merge {}", previous_branch);
+
+            let output = Command::new("git")
+                .arg("merge")
+                .arg(previous_branch)
+                .output()
+                .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+
+            println!("\n{}", command);
+
+            if !output.status.success() {
+                eprintln!("Command returned non-zero exit status: {}", command);
+                eprintln!("It returned: {}", output.status.code().unwrap());
+                io::stdout().write_all(&output.stdout).unwrap();
+                io::stderr().write_all(&output.stderr).unwrap();
+                process::exit(1);
+            }
+            io::stdout().write_all(&output.stdout).unwrap();
+            io::stderr().write_all(&output.stderr).unwrap();
+
+            previous_branch = &branch.branch_name;
+        }
+
+        let current_branch = self.get_current_branch_name()?;
+
+        if current_branch != orig_branch {
+            println!("\nSwitching back to branch: {}", orig_branch.bold());
+            self.checkout_branch(&orig_branch)?;
+        }
+
+        println!("\n🎉 Successfully merged chain {}", chain.name.bold());
+        Ok(())
     }
 }
 
@@ -2098,6 +2154,26 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
+        ("merge", Some(_sub_matches)) => {
+            // Merge all branches for the current chain.
+            let branch_name = git_chain.get_current_branch_name()?;
+
+            let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain(_) => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+
+            if Chain::chain_exists(&git_chain, &branch.chain_name)? {
+                git_chain.merge_chain(&branch.chain_name)?;
+            } else {
+                eprintln!("Unable to merge chain.");
+                eprintln!("Chain does not exist: {}", branch.chain_name.bold());
+                process::exit(1);
+            }
+        }
         _ => {
             git_chain.run_status()?;
         }
@@ -2276,6 +2352,9 @@ where
                 .index(3),
         );
 
+    let merge_subcommand = SubCommand::with_name("merge")
+        .about("Merge all branches for the current chain.");
+
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
         .version("0.0.9")
@@ -2289,6 +2368,7 @@ where
         .subcommand(prune_subcommand)
         .subcommand(setup_subcommand)
         .subcommand(rename_subcommand)
+        .subcommand(merge_subcommand)
         .subcommand(SubCommand::with_name("list").about("List all chains."))
         .subcommand(
             SubCommand::with_name("backup").about("Back up all branches of the current chain."),
