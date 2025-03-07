@@ -94,7 +94,7 @@ fn print_rebase_error(executable_name: &str, branch: &str, upstream_branch: &str
 }
 
 enum BranchSearchResult {
-    NotPartOfAnyChain(String),
+    NotPartOfAnyChain,
     Branch(Branch),
 }
 
@@ -139,9 +139,7 @@ impl Branch {
             || !git_chain.git_local_branch_exists(branch_name)?
         {
             Branch::delete_all_configs(git_chain, branch_name)?;
-            return Ok(BranchSearchResult::NotPartOfAnyChain(
-                branch_name.to_string(),
-            ));
+            return Ok(BranchSearchResult::NotPartOfAnyChain);
         }
 
         let branch = Branch {
@@ -400,7 +398,7 @@ impl Chain {
             let results = Branch::get_branch_with_chain(git_chain, branch_name)?;
 
             match results {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     // TODO: could this fail silently?
                     eprintln!(
                         "Branch not correctly set up as part of a chain: {}",
@@ -795,7 +793,7 @@ impl GitChain {
         let results = Branch::get_branch_with_chain(self, &branch_name)?;
 
         match results {
-            BranchSearchResult::NotPartOfAnyChain(_) => {
+            BranchSearchResult::NotPartOfAnyChain => {
                 self.display_branch_not_part_of_chain_error(&branch_name);
                 process::exit(1);
             }
@@ -817,11 +815,11 @@ impl GitChain {
         let results = Branch::get_branch_with_chain(self, branch_name)?;
 
         match results {
-            BranchSearchResult::NotPartOfAnyChain(_) => {
+            BranchSearchResult::NotPartOfAnyChain => {
                 Branch::setup_branch(self, chain_name, root_branch, branch_name, &sort_option)?;
 
                 match Branch::get_branch_with_chain(self, branch_name)? {
-                    BranchSearchResult::NotPartOfAnyChain(_) => {
+                    BranchSearchResult::NotPartOfAnyChain => {
                         eprintln!("Unable to set up chain for branch: {}", branch_name.bold());
                         process::exit(1);
                     }
@@ -849,7 +847,7 @@ impl GitChain {
         let results = Branch::get_branch_with_chain(self, &branch_name)?;
 
         match results {
-            BranchSearchResult::NotPartOfAnyChain(_) => {
+            BranchSearchResult::NotPartOfAnyChain => {
                 Branch::delete_all_configs(self, &branch_name)?;
 
                 println!(
@@ -904,7 +902,7 @@ impl GitChain {
         sort_option: &SortBranch,
     ) -> Result<(), Error> {
         match Branch::get_branch_with_chain(self, branch_name)? {
-            BranchSearchResult::NotPartOfAnyChain(_) => {
+            BranchSearchResult::NotPartOfAnyChain => {
                 self.display_branch_not_part_of_chain_error(branch_name);
                 process::exit(1);
             }
@@ -912,7 +910,7 @@ impl GitChain {
                 branch.move_branch(self, chain_name, sort_option)?;
 
                 match Branch::get_branch_with_chain(self, &branch.branch_name)? {
-                    BranchSearchResult::NotPartOfAnyChain(_) => {
+                    BranchSearchResult::NotPartOfAnyChain => {
                         eprintln!("Unable to move branch: {}", branch.branch_name.bold());
                         process::exit(1);
                     }
@@ -1519,7 +1517,7 @@ fn parse_sort_option(
         }
 
         let before_branch = match Branch::get_branch_with_chain(git_chain, before_branch)? {
-            BranchSearchResult::NotPartOfAnyChain(_) => {
+            BranchSearchResult::NotPartOfAnyChain => {
                 git_chain.display_branch_not_part_of_chain_error(before_branch);
                 process::exit(1);
             }
@@ -1545,7 +1543,7 @@ fn parse_sort_option(
         }
 
         let after_branch = match Branch::get_branch_with_chain(git_chain, after_branch)? {
-            BranchSearchResult::NotPartOfAnyChain(_) => {
+            BranchSearchResult::NotPartOfAnyChain => {
                 git_chain.display_branch_not_part_of_chain_error(after_branch);
                 process::exit(1);
             }
@@ -1676,7 +1674,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1756,7 +1754,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1779,7 +1777,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1794,7 +1792,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1810,7 +1808,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1829,7 +1827,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1906,7 +1904,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                         eprintln!("With root branch: {}", branch.root_branch.bold());
                         process::exit(1);
                     }
-                    BranchSearchResult::NotPartOfAnyChain(_) => {}
+                    BranchSearchResult::NotPartOfAnyChain => {}
                 }
 
                 if visited_branches.contains(branch_name) {
@@ -1943,7 +1941,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let current_branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -1977,7 +1975,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let current_branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -2011,7 +2009,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let current_branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -2058,7 +2056,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let current_branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain(_) => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
