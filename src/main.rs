@@ -1064,10 +1064,10 @@ impl GitChain {
     }
 
     fn rebase(&self, chain_name: &str, step_rebase: bool, ignore_root: bool) -> Result<(), Error> {
-        switch (self.preliminary_checks(chain_name)) {
+        match self.preliminary_checks(chain_name) {
             Ok(_) => {}
             Err(e) => {
-                return Err(Error::from_str(&format!("🛑 Unable to rebase chain: {}", chain_name)));
+                return Err(Error::from_str(&format!("🛑 Unable to rebase chain {}: {}", chain_name, e)));
             }
         }
 
@@ -1510,7 +1510,7 @@ impl GitChain {
     }
 
     fn merge_chain(&self, chain_name: &str) -> Result<(), Error> {
-        switch (self.preliminary_checks(chain_name)) {
+        match self.preliminary_checks(chain_name) {
             Ok(_) => {}
             Err(e) => {
                 return Err(Error::from_str(&format!("🛑 Unable to merge chain {}: {}", chain_name, e)));
