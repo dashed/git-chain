@@ -1,4 +1,6 @@
+#[path = "common/mod.rs"]
 pub mod common;
+
 use common::{
     create_new_file, first_commit_all, generate_path_to_repo, get_current_branch_name,
     run_test_bin_expect_err, setup_git_repo, teardown_git_repo,
