@@ -1476,18 +1476,11 @@ impl GitChain {
         if output.status.success() {
             let raw_output = String::from_utf8(output.stdout).unwrap();
             let common_point = raw_output.trim().to_string();
-            return Ok(common_point);
-        }
-        if output.status.code().unwrap() == 1 {
+            Ok(common_point)
+        } else {
             // fork-point not found, try git merge-base
-            return self.merge_base(ancestor_branch, descendant_branch);
+            self.merge_base(ancestor_branch, descendant_branch)
         }
-
-        Err(Error::from_str(&format!(
-            "Unable to get forkpoint of {} and {}",
-            ancestor_branch.bold(),
-            descendant_branch.bold()
-        )))
     }
 
     fn is_ancestor(&self, ancestor_branch: &str, descendant_branch: &str) -> Result<bool, Error> {
