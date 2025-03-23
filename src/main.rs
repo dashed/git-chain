@@ -1484,14 +1484,14 @@ impl GitChain {
     }
 
     fn is_ancestor(&self, ancestor_branch: &str, descendant_branch: &str) -> Result<bool, Error> {
-        let (ancestor_object, _reference) = self.repo.revparse_ext(ancestor_branch)?;
-        let (descendant_object, _reference) = self.repo.revparse_ext(descendant_branch)?;
-
-        let common_point = self
-            .repo
-            .merge_base(ancestor_object.id(), descendant_object.id())?;
-
-        Ok(common_point == ancestor_object.id())
+        match self.merge_base(ancestor_branch, descendant_branch) {
+            Ok(common_point) => {
+                let (common_point_obj, _) = self.repo.revparse_ext(&common_point)?;
+                let (ancestor_object, _reference) = self.repo.revparse_ext(ancestor_branch)?;
+                Ok(common_point_obj.id() == ancestor_object.id())
+            }
+            Err(_) => Ok(false),
+        }
     }
 }
 
