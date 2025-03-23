@@ -44,6 +44,52 @@ When rebasing, Git Chain:
 2. Rebases each branch in sequence, preserving the dependency order
 3. Handles edge cases like squash merges and chain reorganization
 
+## Rebase Strategy: How git-chain Updates Your Branches
+
+### Basic Concept
+
+When you run `git chain rebase`, git-chain intelligently updates each branch in your chain to incorporate changes from its parent branch. Think of it like moving your work to sit on top of the latest version of your parent branch.
+
+### How It Works
+
+1. **Order Matters**: Branches are updated in the order they appear in the chain, starting from the one closest to the root branch. This ensures each branch builds upon an already-updated parent.
+
+2. **Finding the Right Starting Point**: For each branch, git-chain determines where your branch originally split from its parent. This point (called a "fork-point") is crucial for keeping only your changes when rebasing.
+
+   > **What is a fork-point?** A fork-point is the specific commit where you originally created your branch from its parent. It's more intelligent than just finding a common ancestor - Git uses its reflog (a history of where branch tips have been) to determine the exact point where your branch's history forked from the parent branch. This is especially useful when the parent branch has been rebased or reorganized since you created your branch. When rebasing, Git needs to know this point to correctly identify which commits belong to your branch (and should be moved) versus which commits were already in the parent branch (and should be left alone).
+
+3. **Smart Detection**: git-chain uses Git's sophisticated "fork-point" detection, which is smarter than simple ancestry checking. It:
+   - First checks if your branch can be simply fast-forwarded
+   - If not, uses Git's history records (reflog) to find the original branching point
+   - Falls back to a regular merge-base if fork-point detection fails
+
+   > **Note on the Fallback Mechanism**: Sometimes Git can't determine the fork-point, particularly in these situations:
+   > - When older reflog entries have been cleaned up by `git gc`
+   > - If you created your branch from an older commit (not the tip) of the parent branch
+   > - After certain operations that affect repository history
+   >
+   > When Git's fork-point detection fails, git-chain automatically falls back to using `git merge-base`, which finds the most recent common ancestor between two branches. While this ensures rebasing can proceed, it might be less precise than using the true fork-point.
+
+4. **Handling Squash Merges**: If you've squash-merged a branch into its parent (combining all commits into one), git-chain detects this and prevents duplicate changes.
+
+5. **The Actual Rebasing**: For each branch, git-chain runs a command similar to:
+   ```
+   git rebase --keep-empty --onto <parent_branch> <fork_point> <branch>
+   ```
+   This moves your changes to sit on top of the updated parent branch.
+
+### Helpful Features
+
+- **Step-by-Step Mode**: Using `git chain rebase --step` allows you to handle one branch at a time, making conflict resolution more manageable.
+
+- **Clean State Check**: git-chain verifies you don't have uncommitted changes before starting, preventing potential loss of work.
+
+- **Returns to Your Branch**: After rebasing, git-chain returns you to the branch you started on.
+
+- **Root Branch Option**: With `--ignore-root`, you can skip updating the first branch in your chain against the root branch.
+
+To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_discussion_on_fork_point_mode
+
 ## Installation
 
 1. Install Rust and Cargo: https://rustup.rs
