@@ -1720,8 +1720,11 @@ impl GitChain {
     }
 
     // Helper function to get merge commit information for detailed reporting
-    fn get_merge_commit_info(&self, parent_branch: &str, branch_name: &str) -> Result<Vec<MergeCommitInfo>, Error> {
-        
+    fn get_merge_commit_info(
+        &self,
+        parent_branch: &str,
+        branch_name: &str,
+    ) -> Result<Vec<MergeCommitInfo>, Error> {
         // Get the latest commit on the branch
         let mut command = Command::new("git");
         command.args(["log", "--oneline", "-1", branch_name]);
@@ -1729,53 +1732,57 @@ impl GitChain {
             Ok(output) => output,
             Err(_) => return Ok(vec![]), // Return empty vec on error
         };
-        
+
         if !output.status.success() {
             return Ok(vec![]);
         }
-        
+
         let latest_commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if latest_commit.is_empty() {
             return Ok(vec![]);
         }
-        
+
         // Check if it's a merge commit by looking for parent commits
         let commit_hash = latest_commit.split_whitespace().next().unwrap_or("");
         if commit_hash.is_empty() {
             return Ok(vec![]);
         }
-        
+
         // Get commit information
         let mut command = Command::new("git");
         command.args(["show", "--stat", commit_hash]);
         let output = match command.output() {
             Ok(output) => output,
-            Err(_) => return Ok(vec![]), 
+            Err(_) => return Ok(vec![]),
         };
-        
+
         if !output.status.success() {
             return Ok(vec![]);
         }
-        
+
         let commit_info = String::from_utf8_lossy(&output.stdout).to_string();
-        
+
         // Check if it's a merge commit, which typically contains "Merge" in the commit message
-        if commit_info.contains(&format!("Merge branch '{}'", parent_branch)) || commit_info.contains("Merge branch") {
+        if commit_info.contains(&format!("Merge branch '{}'", parent_branch))
+            || commit_info.contains("Merge branch")
+        {
             // Extract commit message (first line after commit hash)
             let commit_lines: Vec<&str> = commit_info.lines().collect();
-            let message = commit_lines.iter()
+            let message = commit_lines
+                .iter()
                 .position(|line| line.trim().starts_with("Merge branch"))
                 .map(|idx| commit_lines[idx].trim().to_string());
-            
+
             // Extract stats
-            let stats_line = commit_lines.iter()
+            let stats_line = commit_lines
+                .iter()
                 .find(|line| line.contains("files changed") || line.contains("file changed"));
-                
+
             let stats = stats_line.map(|line| {
                 let mut files_changed = 0;
                 let mut insertions = 0;
                 let mut deletions = 0;
-                
+
                 if let Some(files_idx) = line.find("file changed") {
                     if let Some(files_num) = line[..files_idx].split_whitespace().last() {
                         files_changed = files_num.parse().unwrap_or(0);
@@ -1785,7 +1792,7 @@ impl GitChain {
                         files_changed = files_num.parse().unwrap_or(0);
                     }
                 }
-                
+
                 if let Some(ins_idx) = line.find("insertion") {
                     if let Some(ins_end) = line[..ins_idx].rfind(' ') {
                         if let Some(ins_start) = line[..ins_end].rfind(' ') {
@@ -1794,7 +1801,7 @@ impl GitChain {
                         }
                     }
                 }
-                
+
                 if let Some(del_idx) = line.find("deletion") {
                     if let Some(del_end) = line[..del_idx].rfind(' ') {
                         if let Some(del_start) = line[..del_end].rfind(' ') {
@@ -1803,17 +1810,17 @@ impl GitChain {
                         }
                     }
                 }
-                
+
                 MergeStats {
                     files_changed,
                     insertions,
                     deletions,
                 }
             });
-            
+
             return Ok(vec![MergeCommitInfo { message, stats }]);
         }
-        
+
         // It's not a merge commit
         Ok(vec![])
     }
@@ -1854,72 +1861,90 @@ impl GitChain {
         // For detailed reporting, show information about each branch merge
         if matches!(options.report_level, ReportLevel::Detailed) && merge_operations > 0 {
             println!("\n📝 Detailed Merge Information:");
-            
+
             // Get the chain's branches
             if let Ok(chain) = Chain::get_chain(self, chain_name) {
                 for (index, branch) in chain.branches.iter().enumerate() {
                     if index == 0 && options.ignore_root {
                         continue; // Skip first branch if ignore_root is true
                     }
-                    
+
                     let prev_branch = if index == 0 {
                         chain.root_branch.clone()
                     } else {
                         chain.branches[index - 1].branch_name.clone()
                     };
-                    
+
                     // Skip printing detailed info for skipped branches and squashed merges
-                    let is_skipped = skipped_branches.iter()
+                    let is_skipped = skipped_branches
+                        .iter()
                         .any(|(up, br)| *up == prev_branch && *br == branch.branch_name);
-                    let is_squashed = squashed_merges.iter()
+                    let is_squashed = squashed_merges
+                        .iter()
                         .any(|(up, br)| *up == prev_branch && *br == branch.branch_name);
-                    let is_conflict = merge_conflicts.iter()
+                    let is_conflict = merge_conflicts
+                        .iter()
                         .any(|(up, br)| *up == prev_branch && *br == branch.branch_name);
-                    
+
                     if is_skipped {
-                        println!("  {} ➔ {}: {}", 
-                            prev_branch.bold(), 
+                        println!(
+                            "  {} ➔ {}: {}",
+                            prev_branch.bold(),
                             branch.branch_name.bold(),
-                            "Skipped".dimmed());
+                            "Skipped".dimmed()
+                        );
                         continue;
                     }
-                    
+
                     if is_squashed {
-                        println!("  {} ➔ {}: {}", 
-                            prev_branch.bold(), 
+                        println!(
+                            "  {} ➔ {}: {}",
+                            prev_branch.bold(),
                             branch.branch_name.bold(),
-                            "Squashed and reset".dimmed());
+                            "Squashed and reset".dimmed()
+                        );
                         continue;
                     }
-                    
+
                     if is_conflict {
-                        println!("  {} ➔ {}: {}", 
-                            prev_branch.bold(), 
+                        println!(
+                            "  {} ➔ {}: {}",
+                            prev_branch.bold(),
                             branch.branch_name.bold(),
-                            "Merge conflict".red());
+                            "Merge conflict".red()
+                        );
                         continue;
                     }
-                    
+
                     // Try to get commit information for successful merges
-                    if let Ok(commits) = self.get_merge_commit_info(&prev_branch, &branch.branch_name) {
+                    if let Ok(commits) =
+                        self.get_merge_commit_info(&prev_branch, &branch.branch_name)
+                    {
                         if commits.is_empty() {
                             // Branch was already up to date
-                            println!("  {} ➔ {}: {}", 
-                                prev_branch.bold(), 
+                            println!(
+                                "  {} ➔ {}: {}",
+                                prev_branch.bold(),
                                 branch.branch_name.bold(),
-                                "Already up to date".dimmed());
+                                "Already up to date".dimmed()
+                            );
                         } else {
                             for commit in commits {
-                                println!("  {} ➔ {}: {}", 
-                                    prev_branch.bold(), 
+                                println!(
+                                    "  {} ➔ {}: {}",
+                                    prev_branch.bold(),
                                     branch.branch_name.bold(),
-                                    commit.message.unwrap_or_else(|| "No commit message".to_string()).green());
-                                    
+                                    commit
+                                        .message
+                                        .unwrap_or_else(|| "No commit message".to_string())
+                                        .green()
+                                );
+
                                 if let Some(stat) = commit.stats {
-                                    println!("    {} insertions(+), {} deletions(-) across {} files", 
-                                        stat.insertions, 
-                                        stat.deletions,
-                                        stat.files_changed);
+                                    println!(
+                                        "    {} insertions(+), {} deletions(-) across {} files",
+                                        stat.insertions, stat.deletions, stat.files_changed
+                                    );
                                 }
                             }
                         }
