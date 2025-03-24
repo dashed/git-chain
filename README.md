@@ -354,7 +354,7 @@ This preserves all original commits while incorporating upstream changes via mer
 ```
 git chain merge --chain=feature-login --verbose
 ```
-This updates the specified chain with detailed output while you remain on your current branch.
+This updates the specified chain with detailed output and returns you to your original branch when complete.
 
 #### 3. Clean merge history with no extra merge commits
 
