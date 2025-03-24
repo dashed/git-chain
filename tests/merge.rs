@@ -297,6 +297,202 @@ fn merge_subcommand_simple() {
 }
 
 #[test]
+fn merge_subcommand_with_ahead_behind() {
+    // Test that merge command works with branches that are ahead and behind
+    let repo_name = "merge_subcommand_with_ahead_behind";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+
+        // add first commit to master
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create and checkout new branch named feature
+    {
+        let branch_name = "feature";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "feature");
+
+        // create new file
+        create_new_file(&path_to_repo, "feature.txt", "feature content");
+
+        // add commit to branch feature
+        commit_all(&repo, "Initial feature commit");
+    };
+
+    // Run git chain setup
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "feature",
+    ];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Verify chain setup succeeded
+    let setup_stdout = String::from_utf8_lossy(&output.stdout);
+    println!("CHAIN SETUP STDOUT: {}", setup_stdout);
+    assert!(
+        setup_stdout.contains("Succesfully set up chain: chain_name"),
+        "Chain setup should succeed but got: {}",
+        setup_stdout
+    );
+
+    // Go back to master and make a change 
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_update.txt", "master update");
+    commit_all(&repo, "Update master");
+
+    // Make a change to feature branch
+    checkout_branch(&repo, "feature");
+    create_new_file(&path_to_repo, "feature_update.txt", "feature update");
+    commit_all(&repo, "Update feature");
+
+    // Get current branch and status before merge
+    let current_branch = get_current_branch_name(&repo);
+    println!("=== TEST DIAGNOSTICS: PRE-MERGE STATE ===");
+    println!("Current branch: {}", current_branch);
+    println!(
+        "Expected to be on branch feature: {}",
+        current_branch == "feature"
+    );
+    
+    // Verify branch status
+    let args: Vec<&str> = vec![];
+    let status_output = run_test_bin_expect_ok(&path_to_repo, args);
+    let status_stdout = String::from_utf8_lossy(&status_output.stdout);
+    
+    println!("Branch status: {}", status_stdout);
+    println!("Contains '2 ahead': {}", status_stdout.contains("2 ahead"));
+    println!("Contains '1 behind': {}", status_stdout.contains("1 behind"));
+    println!("======");
+    
+    // Debug breaks with captured output (uncomment for debugging)
+    // assert!(false, "DEBUG STOP: Pre-merge state");
+    // assert!(false, "status_stdout: {}", status_stdout);
+    
+    // Verify the "2 ahead ⦁ 1 behind" status is shown
+    assert!(
+        status_stdout.contains("2 ahead"),
+        "Branch status should show '2 ahead' but got: {}",
+        status_stdout
+    );
+    assert!(
+        status_stdout.contains("1 behind"),
+        "Branch status should show '1 behind' but got: {}",
+        status_stdout
+    );
+
+    // Run git chain merge
+    let args: Vec<&str> = vec!["merge"];
+    let output = run_test_bin(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let exit_status = output.status.success();
+
+    println!("=== TEST DIAGNOSTICS: MERGE COMMAND RESULT ===");
+    println!("Command success: {}", exit_status);
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+    println!("======");
+
+    // Debug breaks with captured output (uncomment for debugging)
+    // assert!(false, "DEBUG STOP: Merge command result");
+    // assert!(false, "stdout: {}", stdout);
+    // assert!(false, "stderr: {}", stderr);
+    // assert!(false, "exit status: {}", exit_status);
+
+    // Assert merge command succeeded
+    assert!(exit_status, "Merge command should succeed but failed");
+    assert!(
+        stdout.contains("Successfully merged chain chain_name"),
+        "stdout should indicate successful merge but got: {}",
+        stdout
+    );
+
+    // Check final state
+    let args: Vec<&str> = vec![];
+    let final_output = run_test_bin_expect_ok(&path_to_repo, args);
+    let final_stdout = String::from_utf8_lossy(&final_output.stdout);
+
+    println!("=== TEST DIAGNOSTICS: FINAL STATE ===");
+    println!("STDOUT: {}", final_stdout);
+    println!("Contains '3 ahead': {}", final_stdout.contains("3 ahead"));
+    println!("Contains '1 behind': {}", !final_stdout.contains("1 behind"));
+    println!("======");
+
+    // Debug breaks with captured output (uncomment for debugging)
+    // assert!(false, "DEBUG STOP: Final state");
+    // assert!(false, "final_stdout: {}", final_stdout);
+    
+    // Verify the branch status after merge - check we're correctly ahead (3 commits) and not behind
+    assert!(
+        final_stdout.contains("3 ahead"),
+        "Branch should be 3 ahead after merge but got: {}",
+        final_stdout
+    );
+    assert!(
+        !final_stdout.contains("behind"),
+        "Branch should not be behind after merge but got: {}",
+        final_stdout
+    );
+    
+    // Verify successful merge message appears in command output
+    assert!(
+        stdout.contains("Successful merges: 1"),
+        "Merge output should report 1 successful merge but got: {}",
+        stdout
+    );
+
+    // Verify files in the feature branch
+    let file_check = run_git_command(&path_to_repo, vec!["ls-files"]);
+    let files = String::from_utf8_lossy(&file_check.stdout);
+
+    println!("=== TEST DIAGNOSTICS: FILES IN FEATURE BRANCH ===");
+    println!("Files: {}", files);
+    println!("Has hello_world.txt: {}", files.contains("hello_world.txt"));
+    println!("Has feature.txt: {}", files.contains("feature.txt"));
+    println!("Has feature_update.txt: {}", files.contains("feature_update.txt"));
+    println!("Has master_update.txt: {}", files.contains("master_update.txt"));
+    println!("======");
+
+    // Check all expected files are present
+    assert!(
+        files.contains("hello_world.txt"),
+        "Feature branch should contain hello_world.txt but got: {}",
+        files
+    );
+    assert!(
+        files.contains("feature.txt"),
+        "Feature branch should contain feature.txt but got: {}",
+        files
+    );
+    assert!(
+        files.contains("feature_update.txt"),
+        "Feature branch should contain feature_update.txt but got: {}",
+        files
+    );
+    assert!(
+        files.contains("master_update.txt"),
+        "Feature branch should contain master_update.txt but got: {}",
+        files
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
 fn merge_subcommand_conflict() {
     // Test that merge command properly handles conflicts
     let repo_name = "merge_subcommand_conflict";
