@@ -14,6 +14,114 @@ use git2::{
 use rand::Rng;
 use regex::Regex;
 
+// Merge options types
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum SquashedMergeHandling {
+    // Reset the branch to the parent branch
+    Reset,
+
+    // Skip merging the branch
+    Skip,
+
+    // Force a merge despite the squashed merge detection
+    Merge,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum ReportLevel {
+    // Minimal reporting (just success/failure)
+    Minimal,
+
+    // Standard reporting (summary with counts)
+    Standard,
+
+    // Detailed reporting (all actions and their results)
+    Detailed,
+}
+
+enum MergeResult {
+    // Successfully merged with changes
+    Success(String), // Contains the merge output message
+
+    // Already up-to-date, no changes needed
+    AlreadyUpToDate,
+
+    // Merge conflict occurred
+    Conflict(String), // Contains the conflict message
+}
+
+// For API consistency, we create our own Error variants
+trait ErrorExt {
+    #[allow(dead_code)]
+    fn from_str(message: &str) -> Self;
+    fn merge_conflict(branch: String, upstream: String, message: Option<String>) -> Self;
+    fn git_command_failed(command: String, status: i32, stdout: String, stderr: String) -> Self;
+}
+
+impl ErrorExt for Error {
+    fn from_str(message: &str) -> Self {
+        Error::from_str(message)
+    }
+
+    fn merge_conflict(branch: String, upstream: String, message: Option<String>) -> Self {
+        let mut error_msg = format!("Merge conflict between {} and {}", upstream, branch);
+        if let Some(details) = message {
+            error_msg.push('\n');
+            error_msg.push_str(&details);
+        }
+        Error::from_str(&error_msg)
+    }
+
+    fn git_command_failed(command: String, status: i32, stdout: String, stderr: String) -> Self {
+        let error_msg = format!(
+            "Git command failed: {}\nStatus: {}\nStdout: {}\nStderr: {}",
+            command, status, stdout, stderr
+        );
+        Error::from_str(&error_msg)
+    }
+}
+
+struct MergeOptions {
+    // Skip the merge of the root branch into the first branch
+    ignore_root: bool,
+
+    // Git merge options passed to all merge operations
+    merge_flags: Vec<String>,
+
+    // Whether to use fork point detection (more accurate but slower)
+    use_fork_point: bool,
+
+    // How to handle squashed merges (reset, skip, merge)
+    squashed_merge_handling: SquashedMergeHandling,
+
+    // Print verbose output
+    verbose: bool,
+
+    // Return to original branch after merging
+    return_to_original: bool,
+
+    // Use simple merge mode
+    simple_mode: bool,
+
+    // Level of detail in the final report
+    report_level: ReportLevel,
+}
+
+impl Default for MergeOptions {
+    fn default() -> Self {
+        MergeOptions {
+            ignore_root: false,
+            merge_flags: vec![],
+            use_fork_point: true,
+            squashed_merge_handling: SquashedMergeHandling::Reset,
+            verbose: false,
+            return_to_original: true,
+            simple_mode: false,
+            report_level: ReportLevel::Standard,
+        }
+    }
+}
+
 fn executable_name() -> String {
     let name = std::env::current_exe()
         .expect("Cannot get the path of current executable.")
@@ -653,6 +761,20 @@ struct GitChain {
     repo: Repository,
 }
 
+// Structure to hold merge commit information
+#[derive(Debug)]
+struct MergeCommitInfo {
+    message: Option<String>,
+    stats: Option<MergeStats>,
+}
+
+#[derive(Debug)]
+struct MergeStats {
+    files_changed: usize,
+    insertions: usize,
+    deletions: usize,
+}
+
 impl GitChain {
     fn init() -> Result<Self, Error> {
         let name_of_current_executable = executable_name();
@@ -1062,46 +1184,18 @@ impl GitChain {
     }
 
     fn rebase(&self, chain_name: &str, step_rebase: bool, ignore_root: bool) -> Result<(), Error> {
-        // invariant: chain_name chain exists
+        match self.preliminary_checks(chain_name) {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Error::from_str(&format!(
+                    "🛑 Unable to rebase chain {}: {}",
+                    chain_name, e
+                )));
+            }
+        }
+
         let chain = Chain::get_chain(self, chain_name)?;
-
-        // ensure root branch exists
-        if !self.git_branch_exists(&chain.root_branch)? {
-            eprintln!("Root branch does not exist: {}", chain.root_branch.bold());
-            process::exit(1);
-        }
-
-        // ensure each branch exists
-        for branch in &chain.branches {
-            if !self.git_local_branch_exists(&branch.branch_name)? {
-                eprintln!("Branch does not exist: {}", branch.branch_name.bold());
-                process::exit(1);
-            }
-        }
-
-        // ensure repository is in a clean state
-        match self.repo.state() {
-            RepositoryState::Clean => {
-                // go ahead to rebase.
-            }
-            _ => {
-                eprintln!("🛑 Repository needs to be in a clean state before rebasing.");
-                process::exit(1);
-            }
-        }
-
-        if self.dirty_working_directory()? {
-            eprintln!(
-                "🛑 Unable to rebase branches for the chain: {}",
-                chain.name.bold()
-            );
-            eprintln!("You have uncommitted changes in your working directory.");
-            eprintln!("Please commit or stash them.");
-            process::exit(1);
-        }
-
         let orig_branch = self.get_current_branch_name()?;
-
         let root_branch = chain.root_branch;
 
         // List of common ancestors between each branch and its parent branch.
@@ -1492,6 +1586,603 @@ impl GitChain {
             }
             Err(_) => Ok(false),
         }
+    }
+
+    fn preliminary_checks(&self, chain_name: &str) -> Result<(), Error> {
+        if !Chain::chain_exists(self, chain_name)? {
+            return Err(Error::from_str(&format!(
+                "Chain {} does not exist",
+                chain_name
+            )));
+        }
+
+        // invariant: chain_name chain exists
+        let chain = Chain::get_chain(self, chain_name)?;
+
+        // ensure root branch exists
+        if !self.git_branch_exists(&chain.root_branch)? {
+            return Err(Error::from_str(&format!(
+                "Root branch does not exist: {}",
+                chain.root_branch.bold()
+            )));
+        }
+
+        // ensure each branch exists
+        for branch in &chain.branches {
+            if !self.git_local_branch_exists(&branch.branch_name)? {
+                return Err(Error::from_str(&format!(
+                    "Branch does not exist: {}",
+                    branch.branch_name.bold()
+                )));
+            }
+        }
+
+        // ensure repository is in a clean state
+        match self.repo.state() {
+            RepositoryState::Clean => {
+                // safe to proceed
+            }
+            _ => {
+                return Err(Error::from_str(
+                    "Repository needs to be in a clean state before merging.",
+                ));
+            }
+        }
+
+        if self.dirty_working_directory()? {
+            return Err(Error::from_str(
+                "You have uncommitted changes in your working directory.",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn get_previous_branch(&self, chain: &Chain, index: usize) -> String {
+        if index == 0 {
+            chain.root_branch.clone()
+        } else {
+            chain.branches[index - 1].branch_name.clone()
+        }
+    }
+
+    fn calculate_basic_merge_bases(&self, chain: &Chain) -> Result<Vec<String>, Error> {
+        let mut common_ancestors = vec![];
+
+        for (index, branch) in chain.branches.iter().enumerate() {
+            let prev_branch = self.get_previous_branch(chain, index);
+
+            // Use regular merge-base without fork-point
+            let common_point = self.merge_base(&prev_branch, &branch.branch_name)?;
+            common_ancestors.push(common_point);
+        }
+
+        Ok(common_ancestors)
+    }
+
+    fn calculate_smart_merge_bases(&self, chain: &Chain) -> Result<Vec<String>, Error> {
+        let mut common_ancestors = vec![];
+
+        for (index, branch) in chain.branches.iter().enumerate() {
+            let prev_branch = self.get_previous_branch(chain, index);
+
+            // Use smart merge-base with potential fork-point
+            let common_point = self.smart_merge_base(&prev_branch, &branch.branch_name)?;
+            common_ancestors.push(common_point);
+        }
+
+        Ok(common_ancestors)
+    }
+
+    fn execute_merge(&self, upstream: &str, merge_flags: &[String]) -> Result<MergeResult, Error> {
+        // Build command with all the specified flags
+        let mut command = Command::new("git");
+        command.arg("merge");
+
+        // Add any custom merge flags
+        for flag in merge_flags {
+            command.arg(flag);
+        }
+
+        command.arg(upstream);
+
+        // Collect output
+        let output = command
+            .output()
+            .map_err(|e| Error::from_str(&format!("IO error: {}", e)))?;
+
+        if output.status.success() {
+            // Check if it was a no-op merge
+            if String::from_utf8_lossy(&output.stdout).contains("Already up to date") {
+                return Ok(MergeResult::AlreadyUpToDate);
+            }
+
+            // Successfully merged
+            Ok(MergeResult::Success(
+                String::from_utf8_lossy(&output.stdout).to_string(),
+            ))
+        } else {
+            // Check if it's a merge conflict
+            if self.repo.state() != RepositoryState::Clean {
+                return Ok(MergeResult::Conflict(
+                    String::from_utf8_lossy(&output.stderr).to_string(),
+                ));
+            }
+
+            // Other error
+            Err(Error::git_command_failed(
+                format!("git merge {}", upstream),
+                output.status.code().unwrap_or(1),
+                String::from_utf8_lossy(&output.stdout).to_string(),
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ))
+        }
+    }
+
+    // Helper function to get merge commit information for detailed reporting
+    fn get_merge_commit_info(&self, parent_branch: &str, branch_name: &str) -> Result<Vec<MergeCommitInfo>, Error> {
+        
+        // Get the latest commit on the branch
+        let mut command = Command::new("git");
+        command.args(["log", "--oneline", "-1", branch_name]);
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(_) => return Ok(vec![]), // Return empty vec on error
+        };
+        
+        if !output.status.success() {
+            return Ok(vec![]);
+        }
+        
+        let latest_commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if latest_commit.is_empty() {
+            return Ok(vec![]);
+        }
+        
+        // Check if it's a merge commit by looking for parent commits
+        let commit_hash = latest_commit.split_whitespace().next().unwrap_or("");
+        if commit_hash.is_empty() {
+            return Ok(vec![]);
+        }
+        
+        // Get commit information
+        let mut command = Command::new("git");
+        command.args(["show", "--stat", commit_hash]);
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(_) => return Ok(vec![]), 
+        };
+        
+        if !output.status.success() {
+            return Ok(vec![]);
+        }
+        
+        let commit_info = String::from_utf8_lossy(&output.stdout).to_string();
+        
+        // Check if it's a merge commit, which typically contains "Merge" in the commit message
+        if commit_info.contains(&format!("Merge branch '{}'", parent_branch)) || commit_info.contains("Merge branch") {
+            // Extract commit message (first line after commit hash)
+            let commit_lines: Vec<&str> = commit_info.lines().collect();
+            let message = commit_lines.iter()
+                .position(|line| line.trim().starts_with("Merge branch"))
+                .map(|idx| commit_lines[idx].trim().to_string());
+            
+            // Extract stats
+            let stats_line = commit_lines.iter()
+                .find(|line| line.contains("files changed") || line.contains("file changed"));
+                
+            let stats = stats_line.map(|line| {
+                let mut files_changed = 0;
+                let mut insertions = 0;
+                let mut deletions = 0;
+                
+                if let Some(files_idx) = line.find("file changed") {
+                    if let Some(files_num) = line[..files_idx].split_whitespace().last() {
+                        files_changed = files_num.parse().unwrap_or(0);
+                    }
+                } else if let Some(files_idx) = line.find("files changed") {
+                    if let Some(files_num) = line[..files_idx].split_whitespace().last() {
+                        files_changed = files_num.parse().unwrap_or(0);
+                    }
+                }
+                
+                if let Some(ins_idx) = line.find("insertion") {
+                    if let Some(ins_end) = line[..ins_idx].rfind(' ') {
+                        if let Some(ins_start) = line[..ins_end].rfind(' ') {
+                            let ins_str = &line[ins_start + 1..ins_end];
+                            insertions = ins_str.parse().unwrap_or(0);
+                        }
+                    }
+                }
+                
+                if let Some(del_idx) = line.find("deletion") {
+                    if let Some(del_end) = line[..del_idx].rfind(' ') {
+                        if let Some(del_start) = line[..del_end].rfind(' ') {
+                            let del_str = &line[del_start + 1..del_end];
+                            deletions = del_str.parse().unwrap_or(0);
+                        }
+                    }
+                }
+                
+                MergeStats {
+                    files_changed,
+                    insertions,
+                    deletions,
+                }
+            });
+            
+            return Ok(vec![MergeCommitInfo { message, stats }]);
+        }
+        
+        // It's not a merge commit
+        Ok(vec![])
+    }
+
+    fn report_merge_results(
+        &self,
+        chain_name: &str,
+        merge_operations: usize,
+        merge_conflicts: Vec<(String, String)>,
+        skipped_branches: Vec<(String, String)>,
+        squashed_merges: Vec<(String, String)>,
+        options: &MergeOptions,
+    ) -> Result<(), Error> {
+        println!("\n📊 Merge Summary for Chain: {}", chain_name.bold());
+        println!("  ✅ Successful merges: {}", merge_operations);
+
+        if !merge_conflicts.is_empty() {
+            println!("  ⚠️  Merge conflicts: {}", merge_conflicts.len());
+            for (upstream, branch) in &merge_conflicts {
+                println!("     - {} into {}", upstream.bold(), branch.bold());
+            }
+        }
+
+        if !skipped_branches.is_empty() {
+            println!("  ℹ️  Skipped branches: {}", skipped_branches.len());
+            for (upstream, branch) in &skipped_branches {
+                println!("     - {} into {}", upstream.bold(), branch.bold());
+            }
+        }
+
+        if !squashed_merges.is_empty() {
+            println!("  🔄 Squashed merges handled: {}", squashed_merges.len());
+            for (upstream, branch) in &squashed_merges {
+                println!("     - Reset {} to {}", branch.bold(), upstream.bold());
+            }
+        }
+
+        // For detailed reporting, show information about each branch merge
+        if matches!(options.report_level, ReportLevel::Detailed) && merge_operations > 0 {
+            println!("\n📝 Detailed Merge Information:");
+            
+            // Get the chain's branches
+            if let Ok(chain) = Chain::get_chain(self, chain_name) {
+                for (index, branch) in chain.branches.iter().enumerate() {
+                    if index == 0 && options.ignore_root {
+                        continue; // Skip first branch if ignore_root is true
+                    }
+                    
+                    let prev_branch = if index == 0 {
+                        chain.root_branch.clone()
+                    } else {
+                        chain.branches[index - 1].branch_name.clone()
+                    };
+                    
+                    // Skip printing detailed info for skipped branches and squashed merges
+                    let is_skipped = skipped_branches.iter()
+                        .any(|(up, br)| *up == prev_branch && *br == branch.branch_name);
+                    let is_squashed = squashed_merges.iter()
+                        .any(|(up, br)| *up == prev_branch && *br == branch.branch_name);
+                    let is_conflict = merge_conflicts.iter()
+                        .any(|(up, br)| *up == prev_branch && *br == branch.branch_name);
+                    
+                    if is_skipped {
+                        println!("  {} ➔ {}: {}", 
+                            prev_branch.bold(), 
+                            branch.branch_name.bold(),
+                            "Skipped".dimmed());
+                        continue;
+                    }
+                    
+                    if is_squashed {
+                        println!("  {} ➔ {}: {}", 
+                            prev_branch.bold(), 
+                            branch.branch_name.bold(),
+                            "Squashed and reset".dimmed());
+                        continue;
+                    }
+                    
+                    if is_conflict {
+                        println!("  {} ➔ {}: {}", 
+                            prev_branch.bold(), 
+                            branch.branch_name.bold(),
+                            "Merge conflict".red());
+                        continue;
+                    }
+                    
+                    // Try to get commit information for successful merges
+                    if let Ok(commits) = self.get_merge_commit_info(&prev_branch, &branch.branch_name) {
+                        if commits.is_empty() {
+                            // Branch was already up to date
+                            println!("  {} ➔ {}: {}", 
+                                prev_branch.bold(), 
+                                branch.branch_name.bold(),
+                                "Already up to date".dimmed());
+                        } else {
+                            for commit in commits {
+                                println!("  {} ➔ {}: {}", 
+                                    prev_branch.bold(), 
+                                    branch.branch_name.bold(),
+                                    commit.message.unwrap_or_else(|| "No commit message".to_string()).green());
+                                    
+                                if let Some(stat) = commit.stats {
+                                    println!("    {} insertions(+), {} deletions(-) across {} files", 
+                                        stat.insertions, 
+                                        stat.deletions,
+                                        stat.files_changed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Overall status message
+        if merge_operations > 0 {
+            println!("\n🎉 Successfully merged chain {}", chain_name.bold());
+        } else if merge_conflicts.is_empty() {
+            println!("\nℹ️  Chain {} is already up-to-date.", chain_name.bold());
+        } else {
+            println!(
+                "\n⚠️  Chain {} was partially merged with conflicts.",
+                chain_name.bold()
+            );
+            println!("   Run `git status` to see conflicted files.");
+            println!("   After resolving conflicts, continue with regular git commands:");
+            println!("     git add <resolved-files>");
+            println!("     git commit -m \"Merge conflict resolution\"");
+        }
+
+        Ok(())
+    }
+
+    fn validate_chain_and_repository_state(&self, chain_name: &str) -> Result<(), Error> {
+        // Get the chain and ensure it exists
+        let chain = Chain::get_chain(self, chain_name)?;
+
+        // Ensure root branch exists
+        if !self.git_branch_exists(&chain.root_branch)? {
+            return Err(Error::from_str(&format!(
+                "Root branch does not exist: {}",
+                chain.root_branch.bold()
+            )));
+        }
+
+        // Ensure each branch exists
+        for branch in &chain.branches {
+            if !self.git_local_branch_exists(&branch.branch_name)? {
+                return Err(Error::from_str(&format!(
+                    "Branch does not exist: {}",
+                    branch.branch_name.bold()
+                )));
+            }
+        }
+
+        // Ensure repository is in a clean state
+        match self.repo.state() {
+            RepositoryState::Clean => {
+                // Repository is in a clean state, proceed
+            }
+            _ => {
+                return Err(Error::from_str(
+                    "🛑 Repository needs to be in a clean state before merging.",
+                ));
+            }
+        }
+
+        // Check for uncommitted changes
+        if self.dirty_working_directory()? {
+            return Err(Error::from_str(&format!(
+                "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes in your working directory.\nPlease commit or stash them.",
+                chain_name.bold()
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn reset_hard_to_branch(&self, branch_name: &str) -> Result<(), Error> {
+        let command = format!("git reset --hard {}", branch_name);
+
+        let output = Command::new("git")
+            .arg("reset")
+            .arg("--hard")
+            .arg(branch_name)
+            .output()
+            .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+
+        if !output.status.success() {
+            return Err(Error::from_str(&format!("Unable to run: {}", command)));
+        }
+
+        Ok(())
+    }
+
+    // Comprehensive merge with enhanced configuration
+    // Provides capabilities like detailed reporting and flexible conflict handling.
+    fn merge_chain_with_options(
+        &self,
+        chain_name: &str,
+        options: MergeOptions,
+    ) -> Result<(), Error> {
+        // Validate inputs and check repository state
+        self.validate_chain_and_repository_state(chain_name)?;
+
+        let chain = Chain::get_chain(self, chain_name)?;
+        let orig_branch = self.get_current_branch_name()?;
+
+        // Calculate merge bases with smart fork point detection if enabled
+        let merge_bases = if options.simple_mode || !options.use_fork_point {
+            self.calculate_basic_merge_bases(&chain)?
+        } else {
+            self.calculate_smart_merge_bases(&chain)?
+        };
+
+        // Keep track of what happened
+        let mut merge_operations = 0;
+        let mut merge_conflicts = Vec::new();
+        let mut skipped_branches = Vec::new();
+        let mut squashed_merges = Vec::new();
+
+        // Iterate through branches
+        for (index, branch) in chain.branches.iter().enumerate() {
+            let prev_branch = self.get_previous_branch(&chain, index);
+
+            // Skip root merge if configured
+            if index == 0 && options.ignore_root {
+                if options.verbose {
+                    println!(
+                        "\n⚠️  Not merging branch {} against root branch {}. Skipping.",
+                        branch.branch_name.bold(),
+                        prev_branch.bold()
+                    );
+                }
+                skipped_branches.push((prev_branch.to_string(), branch.branch_name.clone()));
+                continue;
+            }
+
+            // Check out the branch to merge into
+            self.checkout_branch(&branch.branch_name)?;
+
+            if options.verbose {
+                println!("\nProcessing branch: {}", branch.branch_name.bold());
+            }
+
+            // Store hash before merge for change detection
+            let _before_sha1 = self.get_commit_hash_of_head()?;
+
+            // Handle special cases (e.g., squashed merges) unless in simple mode
+            if !options.simple_mode
+                && self.is_squashed_merged(
+                    &merge_bases[index],
+                    &prev_branch,
+                    &branch.branch_name,
+                )?
+            {
+                if options.verbose {
+                    println!(
+                        "⚠️  Branch {} is detected to be squashed and merged onto {}.",
+                        branch.branch_name.bold(),
+                        prev_branch.bold()
+                    );
+                }
+
+                // Handle the squashed merge case according to configuration
+                match options.squashed_merge_handling {
+                    SquashedMergeHandling::Reset => {
+                        // Reset the branch to the previous branch
+                        self.reset_hard_to_branch(&prev_branch)?;
+                        squashed_merges.push((prev_branch.to_string(), branch.branch_name.clone()));
+                        if options.verbose {
+                            println!(
+                                "Resetting branch {} to {}",
+                                branch.branch_name.bold(),
+                                prev_branch.bold()
+                            );
+                        }
+                        continue;
+                    }
+                    SquashedMergeHandling::Skip => {
+                        if options.verbose {
+                            println!(
+                                "Skipping merge as branch appears to be already squashed-merged."
+                            );
+                        }
+                        skipped_branches
+                            .push((prev_branch.to_string(), branch.branch_name.clone()));
+                        continue;
+                    }
+                    SquashedMergeHandling::Merge => {
+                        if options.verbose {
+                            println!("Proceeding with merge despite squashed merge detection.");
+                        }
+                        // Continue with the merge despite squashed merge detection
+                    }
+                }
+            }
+
+            // Perform the merge with all the specified options
+            match self.execute_merge(&prev_branch, &options.merge_flags)? {
+                MergeResult::Success(summary) => {
+                    merge_operations += 1;
+                    if options.verbose {
+                        println!("{}", summary);
+                    }
+                }
+                MergeResult::AlreadyUpToDate => {
+                    if options.verbose {
+                        println!(
+                            "Branch {} is already up-to-date with {}.",
+                            branch.branch_name.bold(),
+                            prev_branch.bold()
+                        );
+                    }
+                }
+                MergeResult::Conflict(message) => {
+                    merge_conflicts.push((prev_branch.to_string(), branch.branch_name.clone()));
+                    if options.verbose {
+                        println!(
+                            "🛑 Merge conflict between {} and {}:",
+                            prev_branch.bold(),
+                            branch.branch_name.bold()
+                        );
+                        println!("{}", message);
+                    }
+
+                    return Err(Error::merge_conflict(
+                        branch.branch_name.clone(),
+                        prev_branch.clone(),
+                        Some(message),
+                    ));
+                }
+            }
+        }
+
+        // Return to original branch if configured and needed
+        if options.return_to_original && self.get_current_branch_name()? != orig_branch {
+            if options.verbose {
+                println!("\nSwitching back to branch: {}", orig_branch.bold());
+            }
+            self.checkout_branch(&orig_branch)?;
+        }
+
+        // Generate detailed report of what happened based on report level
+        match options.report_level {
+            ReportLevel::Minimal => {
+                // Minimal reporting
+                if merge_operations > 0 {
+                    println!("Successfully merged chain {}", chain_name.bold());
+                } else if merge_conflicts.is_empty() {
+                    println!("Chain {} is already up-to-date.", chain_name.bold());
+                } else {
+                    println!("Failed to merge chain {}", chain_name.bold());
+                }
+            }
+            ReportLevel::Standard | ReportLevel::Detailed => {
+                // Standard/Detailed reporting
+                self.report_merge_results(
+                    chain_name,
+                    merge_operations,
+                    merge_conflicts,
+                    skipped_branches,
+                    squashed_merges,
+                    &options,
+                )?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -2089,6 +2780,102 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
+        ("merge", Some(sub_matches)) => {
+            // Comprehensive merge with enhanced configuration
+            // Determine which chain to use
+            let chain_name = match sub_matches.value_of("chain") {
+                Some(name) => {
+                    // User specified a chain explicitly
+                    if !Chain::chain_exists(&git_chain, name)? {
+                        eprintln!("Chain does not exist: {}", name.bold());
+                        process::exit(1);
+                    }
+                    name.to_string()
+                }
+                None => {
+                    // Use the chain of the current branch
+                    let branch_name = git_chain.get_current_branch_name()?;
+                    let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                        BranchSearchResult::NotPartOfAnyChain => {
+                            git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                            process::exit(1);
+                        }
+                        BranchSearchResult::Branch(branch) => branch,
+                    };
+
+                    if !Chain::chain_exists(&git_chain, &branch.chain_name)? {
+                        eprintln!("Unable to merge chain.");
+                        eprintln!("Chain does not exist: {}", branch.chain_name.bold());
+                        process::exit(1);
+                    }
+
+                    branch.chain_name
+                }
+            };
+
+            // Build merge options based on command line flags
+            let mut merge_flags = Vec::new();
+
+            // Handle git merge flags
+            if sub_matches.is_present("no_ff") {
+                merge_flags.push("--no-ff".to_string());
+            } else if sub_matches.is_present("ff_only") {
+                merge_flags.push("--ff-only".to_string());
+            }
+
+            if sub_matches.is_present("squash") {
+                merge_flags.push("--squash".to_string());
+            }
+
+            if let Some(strategy) = sub_matches.value_of("strategy") {
+                merge_flags.push(format!("--strategy={}", strategy));
+            }
+
+            if let Some(strategy_options) = sub_matches.values_of("strategy_option") {
+                for option in strategy_options {
+                    merge_flags.push(format!("--strategy-option={}", option));
+                }
+            }
+
+            // Determine squashed merge handling
+            let squashed_merge_handling = match sub_matches.value_of("squashed_merge") {
+                Some("reset") => SquashedMergeHandling::Reset,
+                Some("skip") => SquashedMergeHandling::Skip,
+                Some("merge") => SquashedMergeHandling::Merge,
+                _ => SquashedMergeHandling::Reset, // Default
+            };
+
+            // Determine report level
+            let report_level = match sub_matches.value_of("report_level") {
+                Some("minimal") => ReportLevel::Minimal,
+                Some("standard") => ReportLevel::Standard,
+                Some("detailed") => ReportLevel::Detailed,
+                _ => {
+                    if sub_matches.is_present("no_report") {
+                        ReportLevel::Minimal
+                    } else if sub_matches.is_present("detailed_report") {
+                        ReportLevel::Detailed
+                    } else {
+                        ReportLevel::Standard
+                    }
+                }
+            };
+
+            // Build the full options struct
+            let options = MergeOptions {
+                ignore_root: sub_matches.is_present("ignore_root"),
+                merge_flags,
+                use_fork_point: !sub_matches.is_present("no_fork_point"),
+                squashed_merge_handling,
+                verbose: sub_matches.is_present("verbose"),
+                return_to_original: !sub_matches.is_present("stay"),
+                simple_mode: sub_matches.is_present("simple"),
+                report_level,
+            };
+
+            // Execute the merge with the configured options
+            git_chain.merge_chain_with_options(&chain_name, options)?;
+        }
         _ => {
             git_chain.run_status()?;
         }
@@ -2267,6 +3054,213 @@ where
                 .index(3),
         );
 
+    // Merge with comprehensive options
+    let merge_subcommand = SubCommand::with_name("merge")
+        .about("Cascade merges through the branch chain by merging each parent branch into its child branch, preserving commit history.")
+        .arg(
+            Arg::with_name("ignore_root")
+                .short("i")
+                .long("ignore-root")
+                .help("Don't merge the root branch into the first branch")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .long("verbose")
+                .help("Provides detailed output during merging process")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("simple")
+                .short("s")
+                .long("simple")
+                .help("Use simple merge mode")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("no_report")
+                .short("n")
+                .long("no-report")
+                .help("Suppress the merge summary report")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("detailed_report")
+                .short("d")
+                .long("detailed-report")
+                .help("Show a more detailed merge report")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("fork_point")
+                .short("f")
+                .long("fork-point")
+                .help("Use git merge-base --fork-point for finding common ancestors [default]")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("no_fork_point")
+                .long("no-fork-point")
+                .help("Don't use fork-point detection, use regular merge-base")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("stay")
+                .long("stay")
+                .help("Don't return to the original branch after merging")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("squashed_merge")
+                .long("squashed-merge")
+                .help("How to handle squashed merges [default: reset]")
+                .possible_values(&["reset", "skip", "merge"])
+                .default_value("reset")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("chain")
+                .long("chain")
+                .help("Specify a chain to merge other than the current one")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("report_level")
+                .long("report-level")
+                .help("Set the detail level for the merge report [default: standard]")
+                .possible_values(&["minimal", "standard", "detailed"])
+                .default_value("standard")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("ff")
+                .long("ff")
+                .help("Allow fast-forward merges [default]")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("no_ff")
+                .long("no-ff")
+                .help("Create a merge commit even when fast-forward is possible")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("ff_only")
+                .long("ff-only")
+                .help("Only allow fast-forward merges")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("squash")
+                .long("squash")
+                .help("Create a single commit instead of doing a merge")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("strategy")
+                .long("strategy")
+                .help("Use the specified merge strategy (passed directly to 'git merge' as --strategy=<STRATEGY>)")
+                .long_help(
+"Use the specified merge strategy. The value is passed directly to 'git merge' as '--strategy=<STRATEGY>'.
+For the most up-to-date and complete information, refer to your Git version's
+documentation with 'git merge --help' or 'man git-merge'.
+
+Available strategies:
+
+ort (default for single branch):
+    The default strategy from Git 2.33.0. Performs a 3-way merge algorithm.
+    Detects and handles renames. Creates a merged tree of common ancestors
+    when multiple common ancestors exist.
+
+recursive:
+    Previous default strategy. Similar to 'ort' but with support for
+    additional options like patience and diff-algorithm. Uses a 3-way
+    merge algorithm and can detect and handle renames.
+
+resolve:
+    Only resolves two heads using a 3-way merge algorithm. Tries to
+    detect criss-cross merge ambiguities but doesn't handle renames.
+
+octopus:
+    Default strategy when merging more than two branches. Refuses to do
+    complex merges requiring manual resolution.
+
+ours:
+    Resolves any number of heads, but the resulting tree is always that
+    of the current branch, ignoring all changes from other branches.
+
+subtree:
+    Modified 'ort' strategy. When merging trees A and B, if B corresponds
+    to a subtree of A, B is adjusted to match A's tree structure.")
+                .possible_values(&["ort", "recursive", "resolve", "octopus", "ours", "subtree"])
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("strategy_option")
+                .long("strategy-option")
+                .help("Pass merge strategy specific option (passed directly to 'git merge' as --strategy-option=<OPTION>)")
+                .long_help(
+"Pass merge strategy specific option. The value is passed directly to 'git merge' as '--strategy-option=<OPTION>'.
+Can be specified multiple times for different options.
+Available options depend on the selected merge strategy.
+
+Note: These options are passed directly to 'git merge'. For the most
+up-to-date and complete information, refer to your Git version's
+documentation with 'git merge --help' or 'man git-merge'.
+
+Common options for 'ort' and 'recursive' strategies:
+
+ours:
+    Forces conflicting hunks to be auto-resolved by favoring our side.
+    Changes from other branches that don't conflict are preserved.
+    Not to be confused with the 'ours' merge strategy.
+
+theirs:
+    Forces conflicting hunks to be auto-resolved by favoring their side.
+    Opposite of 'ours' option.
+
+ignore-space-change:
+    Ignores whitespace changes when finding conflicts.
+
+ignore-all-space:
+    Ignores all whitespace when finding conflicts.
+
+ignore-space-at-eol:
+    Ignores only whitespace changes at the end of lines.
+
+renormalize:
+    Runs a virtual check-out and check-in of all three stages of a file
+    when resolving a three-way merge, useful for merging branches with
+    different line ending normalization rules.
+
+find-renames[=<n>]:
+    Detects renamed files. Optional value sets similarity threshold (0-100).
+
+subtree[=<path>]:
+    Instead of comparing trees at the same level, the specified path
+    is prefixed to make the shape of two trees match.
+
+Options specific to 'recursive' strategy:
+
+patience:
+    Uses the 'patience diff' algorithm for matching lines.
+
+diff-algorithm=<algorithm>:
+    Use a different diff algorithm, which can help avoid mismerges.
+    Values: patience, minimal, histogram, myers
+
+Examples:
+    --strategy-option=ours
+    --strategy-option=ignore-space-change
+    --strategy-option=renormalize
+    --strategy-option=patience
+    --strategy-option=diff-algorithm=histogram
+    --strategy-option=find-renames=70")
+                .takes_value(true)
+                .multiple(true),
+        );
+
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
         .version("0.0.9")
@@ -2280,6 +3274,7 @@ where
         .subcommand(prune_subcommand)
         .subcommand(setup_subcommand)
         .subcommand(rename_subcommand)
+        .subcommand(merge_subcommand)
         .subcommand(SubCommand::with_name("list").about("List all chains."))
         .subcommand(
             SubCommand::with_name("backup").about("Back up all branches of the current chain."),

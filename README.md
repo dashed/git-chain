@@ -39,16 +39,20 @@ Git Chain stores branch relationships in your repository's Git config, tracking:
 - The order of branches within a chain
 - Each branch's root branch
 
-When rebasing, Git Chain:
+Git Chain offers two strategies for updating branches:
+1. **Rebase**: Rewrites branch history by replaying commits on top of the updated parent branch
+2. **Merge**: Preserves branch history by creating merge commits that incorporate changes from the parent branch
+
+When operating on chains, Git Chain:
 1. Determines the correct fork-point for each branch using `git merge-base --fork-point`
-2. Rebases each branch in sequence, preserving the dependency order
+2. Updates each branch in sequence, preserving the dependency order
 3. Handles edge cases like squash merges and chain reorganization
 
 ## Rebase Strategy: How git-chain Updates Your Branches
 
 ### Basic Concept
 
-When you run `git chain rebase`, git-chain intelligently updates each branch in your chain to incorporate changes from its parent branch. Think of it like moving your work to sit on top of the latest version of your parent branch.
+When you run `git chain rebase`, git-chain intelligently updates each branch in your chain to incorporate changes from its parent branch. Think of it like moving your work to sit on top of the latest version of your parent branch. This rewrites commit history, giving a cleaner, linear history but generating new commit hashes.
 
 ### How It Works
 
@@ -78,17 +82,383 @@ When you run `git chain rebase`, git-chain intelligently updates each branch in 
    ```
    This moves your changes to sit on top of the updated parent branch.
 
-### Helpful Features
-
-- **Step-by-Step Mode**: Using `git chain rebase --step` allows you to handle one branch at a time, making conflict resolution more manageable.
-
-- **Clean State Check**: git-chain verifies you don't have uncommitted changes before starting, preventing potential loss of work.
-
-- **Returns to Your Branch**: After rebasing, git-chain returns you to the branch you started on.
-
-- **Root Branch Option**: With `--ignore-root`, you can skip updating the first branch in your chain against the root branch.
-
 To read more about `fork-point`, see: https://git-scm.com/docs/git-merge-base#_discussion_on_fork_point_mode
+
+### Command Options and Flags
+
+Git Chain's rebase command offers customization through its flags:
+
+- **`--step, -s`**: Rebase one branch at a time, requiring manual confirmation between steps
+  ```
+  git chain rebase --step
+  ```
+  Perfect for carefully managing complex rebases where conflicts might occur.
+
+- **`--ignore-root, -i`**: Skip rebasing the first branch onto the root branch
+  ```
+  git chain rebase --ignore-root
+  ```
+  Useful when you want to update relationships between chain branches without incorporating root branch changes.
+
+### Example Scenarios and Solutions
+
+Here are some common scenarios and how to handle them with git-chain rebase:
+
+#### 1. Standard chain update
+
+**Scenario**: You want to update all branches in the chain.
+
+**Solution**:
+```
+git chain rebase
+```
+This rebases all branches in the chain sequentially, starting from the one closest to the root branch.
+
+#### 2. Updating just the relationship between chain branches
+
+**Scenario**: You want to update only relationships between branches in a chain, not incorporating new root branch changes.
+
+**Solution**:
+```
+git chain rebase --ignore-root
+```
+This skips rebasing the first branch onto the root branch.
+
+#### 3. Careful rebasing with potential conflicts
+
+**Scenario**: You anticipate conflicts and want to handle each branch separately.
+
+**Solution**:
+```
+git chain rebase --step
+```
+This rebases one branch at a time, waiting for your confirmation between steps.
+
+### Handling Rebase Conflicts
+
+When rebasing branches in a chain, conflicts can sometimes occur. Git Chain handles conflicts as follows:
+
+1. **Conflict Detection**: When a rebase conflict occurs, git-chain:
+   - Pauses the rebasing process at the conflicted commit
+   - Leaves the repository in a conflicted state for you to resolve
+   - Provides information about which branch is being rebased and where the conflict occurred
+   - May create automatic backup branches if conflicts are detected
+
+2. **Resolution Process**:
+   - The conflicted files will be marked with conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)
+   - Resolve conflicts manually by editing the conflicted files
+   - Add the resolved files with `git add <file>`
+   - Continue the rebase with `git rebase --continue`
+
+3. **Continuing After Resolution**:
+   - After resolving the conflicts and continuing the rebase for the current branch, you can resume updating the chain:
+   ```
+   git chain rebase
+   ```
+   - Git Chain will pick up where it left off, continuing with the remaining branches
+
+4. **Aborting a Problematic Rebase**:
+   - If you decide not to resolve the conflicts, you can abort the current rebase:
+   ```
+   git rebase --abort
+   ```
+   - Then, if you created backup branches, you can restore from them:
+   ```
+   git checkout branch-name
+   git reset --hard branch-name-backup
+   ```
+
+**Example Conflict Workflow**:
+```
+$ git chain rebase
+Rebasing branch feature/auth onto master...
+Auto-merging src/auth.js
+CONFLICT (content): Merge conflict in src/auth.js
+error: could not apply 1a2b3c4... Add authentication feature
+
+# Resolve the conflict
+$ vim src/auth.js
+$ git add src/auth.js
+$ git rebase --continue
+Successfully rebased branch feature/auth
+
+Rebasing branch feature/profiles onto feature/auth...
+# Continues with remaining branches
+```
+
+### Recovery Options
+
+If a rebase goes wrong, Git Chain provides several recovery options:
+
+1. **Backup Branches**: If you used `--backup`, you can restore using:
+   ```
+   git checkout branch-name
+   git reset --hard branch-name-backup
+   ```
+
+2. **Reflog**: Even without backups, you can recover using Git's reflog:
+   ```
+   git checkout branch-name
+   git reflog
+   git reset --hard branch-name@{1}  # Reset to previous state
+   ```
+
+3. **Abort In-Progress Rebase**: If a rebase is still in progress:
+   ```
+   git rebase --abort
+   ```
+
+## Merge Strategy: Preserving Branch History
+
+### Basic Concept
+
+When you run `git chain merge`, git-chain cascades merges through your branch chain by merging each parent branch into its child branch. Unlike rebasing, merging preserves the original commit history by creating merge commits that link branches together.
+
+### How It Works
+
+1. **Order Matters**: Branches are updated in the order they appear in the chain, starting from the one closest to the root branch. Each branch incorporates changes from its parent through a merge.
+
+2. **Finding the Right Starting Point**: Git Chain uses the same intelligent fork-point detection as in rebasing to identify the best common ancestor for each merge.
+
+3. **Smart Detection**: Git Chain checks for special cases:
+   - If branches can be fast-forwarded (no merge needed)
+   - If a branch has been squash-merged (to avoid duplicate changes)
+   - If there are merge conflicts that need manual resolution
+
+4. **The Actual Merging**: For each branch, git-chain runs a command similar to:
+   ```
+   git checkout <branch>
+   git merge <parent_branch>
+   ```
+   This incorporates all changes from the parent branch while preserving the branch's original commit history.
+
+### Command Options and Flags
+
+Git Chain's merge command offers extensive customization through various flags and options:
+
+#### Basic Options
+
+- **`--verbose, -v`**: Provides detailed output during the merging process
+  ```
+  git chain merge --verbose
+  ```
+  Shows exactly what's happening with each branch, including Git's merge output.
+
+- **`--ignore-root, -i`**: Skips merging the root branch into the first branch
+  ```
+  git chain merge --ignore-root
+  ```
+  Useful when you want to update relationships between branches in the chain without incorporating root branch changes.
+
+- **`--stay`**: Don't return to the original branch after merging
+  ```
+  git chain merge --stay
+  ```
+  By default, git-chain returns you to your starting branch. Use this flag to remain on the last merged branch.
+
+- **`--chain=<name>`**: Operate on a specific chain other than the current one
+  ```
+  git chain merge --chain=feature-x
+  ```
+  Allows you to merge a chain even when you're not on a branch that belongs to it.
+
+#### Merge Behavior Controls
+
+- **`--simple, -s`**: Use simple merge mode without advanced detection
+  ```
+  git chain merge --simple
+  ```
+  Disables fork-point detection and squashed merge handling for a faster, simpler merge process.
+
+- **`--fork-point, -f`**: Use Git's fork-point detection (default behavior)
+  ```
+  git chain merge --fork-point
+  ```
+  Explicitly enables fork-point detection for finding better merge bases.
+
+- **`--no-fork-point`**: Disable fork-point detection, use regular merge-base
+  ```
+  git chain merge --no-fork-point
+  ```
+  Can be faster but potentially less accurate. Useful for repositories with limited reflog history.
+
+- **`--squashed-merge=<mode>`**: How to handle branches that appear squash-merged
+  ```
+  git chain merge --squashed-merge=reset  # Default: reset to match parent branch
+  git chain merge --squashed-merge=skip   # Skip branches that appear squashed
+  git chain merge --squashed-merge=merge  # Force merge despite the detection
+  ```
+  Controls behavior when Git Chain detects that a branch appears to have been squash-merged into its parent.
+
+#### Git Merge Options
+
+- **Fast-forward behavior**:
+  ```
+  git chain merge --ff        # Allow fast-forward if possible (default)
+  git chain merge --no-ff     # Always create a merge commit
+  git chain merge --ff-only   # Only allow fast-forward merges
+  ```
+  Controls how Git handles cases where a branch can be fast-forwarded.
+
+- **`--squash`**: Create a single commit instead of a merge commit
+  ```
+  git chain merge --squash
+  ```
+  Combines all changes from the source branch into a single commit.
+
+- **`--strategy=<strategy>`**: Use a specific Git merge strategy
+  ```
+  git chain merge --strategy=recursive
+  git chain merge --strategy=ours
+  ```
+  Specifies which Git merge strategy to use (e.g., recursive, resolve, octopus).
+
+- **`--strategy-option=<option>`**: Pass strategy-specific options
+  ```
+  git chain merge --strategy=recursive --strategy-option=ignore-space-change
+  git chain merge --strategy=recursive --strategy-option=patience
+  ```
+  Customizes the behavior of the selected merge strategy.
+
+#### Reporting Options
+
+- **Adjusting report detail**:
+  ```
+  git chain merge --report-level=minimal    # Basic success/failure messages
+  git chain merge --report-level=standard   # Summary with counts (default)
+  git chain merge --report-level=detailed   # Comprehensive per-branch details
+  git chain merge --no-report               # Suppress merge summary report
+  git chain merge --detailed-report         # Same as --report-level=detailed
+  ```
+  Controls how much information is displayed after the merge completes.
+
+### Example Scenarios and Solutions
+
+Here are some common scenarios and how to handle them with git-chain merge:
+
+#### 1. Updating PRs without breaking review comments
+
+**Scenario**: You have multiple PRs open, and the main branch has received changes.
+
+**Solution**:
+```
+git chain merge
+```
+This preserves all original commits while incorporating upstream changes via merge commits.
+
+#### 2. Custom merge handling for a specific chain
+
+**Scenario**: You want to update a feature chain while on an unrelated branch.
+
+**Solution**:
+```
+git chain merge --chain=feature-login --verbose
+```
+This updates the specified chain with detailed output while you remain on your current branch.
+
+#### 3. Clean merge history with no extra merge commits
+
+**Scenario**: You want to update the chain while maintaining a cleaner history where possible.
+
+**Solution**:
+```
+git chain merge --ff-only
+```
+This only updates branches that can be fast-forwarded, failing if a real merge would be required.
+
+#### 4. Simplified merge for branches with squashed history
+
+**Scenario**: Your workflow includes squash-merging branches, and you need to handle this intelligently.
+
+**Solution**:
+```
+git chain merge --squashed-merge=skip
+```
+This skips branches that appear to have been squash-merged, avoiding duplicate changes.
+
+#### 5. Focused merge excluding root changes
+
+**Scenario**: You want to merge changes between branches in the chain but not from the root branch.
+
+**Solution**:
+```
+git chain merge --ignore-root
+```
+This skips merging the root branch into the first chain branch.
+
+#### 6. Complex conflict resolution with detailed reporting
+
+**Scenario**: You anticipate merge conflicts and want clear information to resolve them.
+
+**Solution**:
+```
+git chain merge --verbose --detailed-report
+```
+This provides maximum information during the merge process and in the final report.
+
+### Handling Merge Conflicts
+
+When merging branches in a chain, conflicts can sometimes occur. Git Chain handles conflicts as follows:
+
+1. **Conflict Detection**: When a merge conflict occurs, git-chain:
+   - Stops the merging process at the conflicted branch
+   - Leaves the repository in a conflicted state for you to resolve
+   - Provides information about which branches conflicted
+   - Shows which files have conflicts
+
+2. **Resolution Process**:
+   - The conflicted files will be marked with conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)
+   - Resolve conflicts manually by editing the conflicted files
+   - Add the resolved files with `git add <file>`
+   - Complete the merge with `git commit`
+
+3. **Continuing After Resolution**:
+   - After resolving the conflicts and committing the merge, you can continue updating the chain:
+   ```
+   git chain merge
+   ```
+   - Git Chain will pick up where it left off, continuing with the remaining branches
+
+**Example Conflict Output**:
+```
+Processing branch: feature/auth
+Auto-merging src/config.js
+Merge made by the 'recursive' strategy.
+ src/config.js | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+Processing branch: feature/profiles
+🛑 Merge conflict between feature/auth and feature/profiles:
+Auto-merging src/models/user.js
+CONFLICT (content): Merge conflict in src/models/user.js
+Automatic merge failed; fix conflicts and then commit the result.
+
+error: Merge conflict between feature/auth and feature/profiles
+
+📊 Merge Summary for Chain: feature
+  ✅ Successful merges: 1
+  ⚠️  Merge conflicts: 1
+     - feature/auth into feature/profiles
+  
+⚠️  Chain feature was partially merged with conflicts.
+   Run `git status` to see conflicted files.
+   After resolving conflicts, continue with regular git commands:
+     git add <resolved-files>
+     git commit -m "Merge conflict resolution"
+```
+
+### When to Use Merge vs. Rebase
+
+- **Use Merge When**:
+  - You're working with branches that already have open pull/merge requests
+  - You want to preserve the complete history of branch development
+  - You need to maintain the context of review comments on specific commits
+  - You're collaborating with others who are also working on the branches
+
+- **Use Rebase When**:
+  - You're working on private branches that haven't been shared
+  - You prefer a linear, cleaner history
+  - You want each branch's changes to appear as if they were developed on top of the latest version of their parent
 
 ## Installation
 
@@ -193,11 +563,53 @@ git chain list
 ### Working with Chains
 
 ```
-# Rebase all branches in the current chain
+# Rebase all branches in the current chain (rewrites history)
 git chain rebase
 
-# Rebase step-by-step (one branch at a time)
+# Rebase one branch at a time
 git chain rebase --step
+
+# Skip rebasing the first branch onto the root branch
+git chain rebase --ignore-root
+
+# Merge all branches in the current chain (preserves history)
+git chain merge
+
+# Merge with detailed output
+git chain merge --verbose
+
+# Skip merging the root branch into the first branch
+git chain merge --ignore-root
+
+# Create merge commits even for fast-forward merges
+git chain merge --no-ff
+
+# Only allow fast-forward merges
+git chain merge --ff-only
+
+# Use simple merge mode (without advanced detection)
+git chain merge --simple
+
+# Specify how to handle squashed merges
+git chain merge --squashed-merge=reset  # Reset branch to parent (default)
+git chain merge --squashed-merge=skip   # Skip branches that appear squashed
+git chain merge --squashed-merge=merge  # Merge despite squashed detection
+
+# Set the level of detail in the merge report
+git chain merge --report-level=minimal    # Basic success/failure only
+git chain merge --report-level=standard   # Summary with counts (default)
+git chain merge --report-level=detailed   # Comprehensive per-branch details
+git chain merge --no-report               # Suppress report entirely
+git chain merge --detailed-report         # Same as --report-level=detailed
+
+# Don't return to original branch after merging
+git chain merge --stay
+
+# Merge a different chain than the current one
+git chain merge --chain=feature-login
+
+# Use specific Git merge strategy and options
+git chain merge --strategy=recursive --strategy-option=ignore-space-change
 
 # Create backup branches for all branches in the chain
 git chain backup
@@ -229,12 +641,14 @@ git chain remove --chain
 git chain remove --chain=<chain_name>
 ```
 
-## Smart Rebasing Features
+## Smart Branch Management Features
 
 Git Chain has several advanced features:
 
-- **Fork-point detection**: Uses Git's fork-point detection to find the correct base for rebases
+- **Multiple update strategies**: Choose between rebasing (rewriting history) or merging (preserving history)
+- **Fork-point detection**: Uses Git's fork-point detection to find the correct base for rebases and merges
 - **Squash-merge detection**: Can detect when a branch has been squash-merged into its parent
+- **Detailed reporting**: Provides clear summaries of operations performed on your branches
 - **Backup branches**: Creates backup branches before rebasing to safeguard your work
 - **Branch navigation**: Easily move between branches in your chain
 - **Chain reorganization**: Move branches around within the chain or between chains
