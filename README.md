@@ -100,13 +100,13 @@ Git Chain's rebase command offers customization through its flags:
   ```
   Useful when you want to update relationships between chain branches without incorporating root branch changes.
 
-### Example Scenarios and Solutions
+### Examples (`git chain rebase`)
 
 Here are some common scenarios and how to handle them with git-chain rebase:
 
 #### 1. Standard chain update
 
-**Scenario**: You want to update all branches in the chain.
+**Scenario**: You want to update all branches in the chain to incorporate changes from their parent branches.
 
 **Solution**:
 ```
@@ -332,7 +332,7 @@ Git Chain's merge command offers extensive customization through various flags a
   ```
   Controls how much information is displayed after the merge completes.
 
-### Example Scenarios and Solutions
+### Examples (`git chain merge`)
 
 Here are some common scenarios and how to handle them with git-chain merge:
 
