@@ -331,12 +331,7 @@ fn merge_subcommand_with_ahead_behind() {
     };
 
     // Run git chain setup
-    let args: Vec<&str> = vec![
-        "setup",
-        "chain_name",
-        "master",
-        "feature",
-    ];
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "feature"];
     let output = run_test_bin_expect_ok(&path_to_repo, args);
 
     // Verify chain setup succeeded
@@ -348,7 +343,7 @@ fn merge_subcommand_with_ahead_behind() {
         setup_stdout
     );
 
-    // Go back to master and make a change 
+    // Go back to master and make a change
     checkout_branch(&repo, "master");
     create_new_file(&path_to_repo, "master_update.txt", "master update");
     commit_all(&repo, "Update master");
@@ -366,21 +361,24 @@ fn merge_subcommand_with_ahead_behind() {
         "Expected to be on branch feature: {}",
         current_branch == "feature"
     );
-    
+
     // Verify branch status
     let args: Vec<&str> = vec![];
     let status_output = run_test_bin_expect_ok(&path_to_repo, args);
     let status_stdout = String::from_utf8_lossy(&status_output.stdout);
-    
+
     println!("Branch status: {}", status_stdout);
     println!("Contains '2 ahead': {}", status_stdout.contains("2 ahead"));
-    println!("Contains '1 behind': {}", status_stdout.contains("1 behind"));
+    println!(
+        "Contains '1 behind': {}",
+        status_stdout.contains("1 behind")
+    );
     println!("======");
-    
+
     // Debug breaks with captured output (uncomment for debugging)
     // assert!(false, "DEBUG STOP: Pre-merge state");
     // assert!(false, "status_stdout: {}", status_stdout);
-    
+
     // Verify the "2 ahead ⦁ 1 behind" status is shown
     assert!(
         status_stdout.contains("2 ahead"),
@@ -429,13 +427,16 @@ fn merge_subcommand_with_ahead_behind() {
     println!("=== TEST DIAGNOSTICS: FINAL STATE ===");
     println!("STDOUT: {}", final_stdout);
     println!("Contains '3 ahead': {}", final_stdout.contains("3 ahead"));
-    println!("Contains '1 behind': {}", !final_stdout.contains("1 behind"));
+    println!(
+        "Contains '1 behind': {}",
+        !final_stdout.contains("1 behind")
+    );
     println!("======");
 
     // Debug breaks with captured output (uncomment for debugging)
     // assert!(false, "DEBUG STOP: Final state");
     // assert!(false, "final_stdout: {}", final_stdout);
-    
+
     // Verify the branch status after merge - check we're correctly ahead (3 commits) and not behind
     assert!(
         final_stdout.contains("3 ahead"),
@@ -447,7 +448,7 @@ fn merge_subcommand_with_ahead_behind() {
         "Branch should not be behind after merge but got: {}",
         final_stdout
     );
-    
+
     // Verify successful merge message appears in command output
     assert!(
         stdout.contains("Successful merges: 1"),
@@ -463,8 +464,14 @@ fn merge_subcommand_with_ahead_behind() {
     println!("Files: {}", files);
     println!("Has hello_world.txt: {}", files.contains("hello_world.txt"));
     println!("Has feature.txt: {}", files.contains("feature.txt"));
-    println!("Has feature_update.txt: {}", files.contains("feature_update.txt"));
-    println!("Has master_update.txt: {}", files.contains("master_update.txt"));
+    println!(
+        "Has feature_update.txt: {}",
+        files.contains("feature_update.txt")
+    );
+    println!(
+        "Has master_update.txt: {}",
+        files.contains("master_update.txt")
+    );
     println!("======");
 
     // Check all expected files are present
