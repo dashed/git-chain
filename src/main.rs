@@ -13,6 +13,7 @@ use git2::{
 };
 use rand::Rng;
 use regex::Regex;
+use serde_json;
 
 fn executable_name() -> String {
     let name = std::env::current_exe()
@@ -508,12 +509,53 @@ impl Chain {
             let ahead_behind_status =
                 self.display_ahead_behind(git_chain, upstream, &branch.branch_name)?;
 
-            let status_line = if ahead_behind_status.is_empty() {
-                format!("{:>6}{}", marker, branch_name)
-            } else {
-                format!("{:>6}{} ⦁ {}", marker, branch_name, ahead_behind_status)
-            };
+            let status_line: String;
+            if check_gh_cli_installed().is_ok() {
+                // Check for open pull requests for each branch
+                let output = Command::new("gh")
+                    .arg("pr")
+                    .arg("list")
+                    .arg("--head")
+                    .arg(&branch.branch_name)
+                    .arg("--json")
+                    .arg("url")
+                    .output();
 
+                let pr_status = match output {
+                    Ok(output) if output.status.success() => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
+                        let pr_urls: Vec<String> = pr_objects.iter().filter_map(|pr| pr.get("url").and_then(|url| url.as_str()).map(String::from)).collect();
+
+                        if !pr_urls.is_empty() {
+                            let pr_list = pr_urls
+                                .iter()
+                                .map(|url| format!("{}", url))
+                                .collect::<Vec<String>>()
+                                .join("; ");
+                            format!(" ({})", pr_list)
+                        } else {
+                            String::new()
+                        }
+                    }
+                    _ => {
+                        eprintln!("  Failed to retrieve PRs for branch {}.", branch.branch_name.bold());
+                        String::new()
+                    }
+                };
+
+                status_line = if ahead_behind_status.is_empty() && pr_status.is_empty() {
+                    format!("{:>6}{}", marker, branch_name)
+                } else {
+                    format!("{:>6}{} ⦁ {}{}", marker, branch_name, ahead_behind_status, pr_status)
+                };
+            } else {
+                status_line = if ahead_behind_status.is_empty() {
+                    format!("{:>6}{}", marker, branch_name)
+                } else {
+                    format!("{:>6}{} ⦁ {}", marker, branch_name, ahead_behind_status)
+                };
+            }
             println!("{}", status_line.trim_end());
         }
 
