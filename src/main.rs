@@ -648,47 +648,6 @@ impl Chain {
         }
         Ok(())
     }
-
-    fn pr(&self, chain_name: &str, draft: bool) -> Result<(), Error> {
-        if Chain::chain_exists(self, chain_name)? {
-            let chain = Chain::get_chain(self, chain_name)?;
-
-            for (i, branch) in chain.branches.iter().enumerate() {
-                let base_branch = if i == 0 {
-                    &chain.root_branch
-                } else {
-                    &chain.branches[i - 1].branch_name
-                };
-
-                let mut gh_command = Command::new("gh");
-                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
-
-                if draft {
-                    gh_command.arg("--draft");
-                }
-
-                let output = gh_command.output().unwrap_or_else(|_| {
-                    panic!(
-                        "Unable to create pull request for branch {}",
-                        branch.branch_name.bold()
-                    )
-                });
-
-                if output.status.success() {
-                    println!("✅ Created PR for {} -> {}", branch.branch_name.bold(), base_branch.bold());
-                } else {
-                    io::stdout().write_all(&output.stdout).unwrap();
-                    io::stderr().write_all(&output.stderr).unwrap();
-                    println!("🛑 Failed to create PR for {}", branch.branch_name.bold());
-                }
-            }
-        } else {
-            eprintln!("Unable to create PRs for the chain.");
-            eprintln!("Chain does not exist: {}", chain_name);
-            process::exit(1);
-        }
-        Ok(())
-    }
 }
 
 struct GitChain {
@@ -1545,6 +1504,7 @@ impl GitChain {
     }
 
     fn pr(&self, chain_name: &str, draft: bool) -> Result<(), Error> {
+        check_gh_cli_installed()?;
         if Chain::chain_exists(self, chain_name)? {
             let chain = Chain::get_chain(self, chain_name)?;
 
@@ -2181,9 +2141,18 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             }
         }
         ("pr", Some(sub_matches)) => {
-            let chain_name = sub_matches.value_of("chain_name").unwrap();
+            let branch_name = git_chain.get_current_branch_name()?;
+
+            let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain(_) => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+
             let draft = sub_matches.is_present("draft");
-            git_chain.pr(chain_name, draft)?;
+            git_chain.pr(&branch.chain_name, draft)?;
         }
         _ => {
             git_chain.run_status()?;
@@ -2423,4 +2392,16 @@ where
 
 fn main() {
     run_app(std::env::args_os());
+}
+
+fn check_gh_cli_installed() -> Result<(), Error> {
+    let output = Command::new("gh").arg("--version").output();
+    match output {
+        Ok(output) if output.status.success() => Ok(()),
+        _ => {
+            eprintln!("The GitHub CLI (gh) is not installed or not found in the PATH.");
+            eprintln!("Please install it from https://cli.github.com/ and ensure it's available in your PATH.");
+            process::exit(1);
+        }
+    }
 }
