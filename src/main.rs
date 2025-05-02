@@ -1735,10 +1735,11 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             git_chain.remove_branch_from_chain(branch_name)?
         }
-        ("list", Some(_sub_matches)) => {
+        ("list", Some(sub_matches)) => {
             // List all chains.
             let current_branch = git_chain.get_current_branch_name()?;
-            git_chain.list_chains(&current_branch, false)? // TODO instead of false, also parameterize the list-chains subcommand
+            let show_prs = sub_matches.is_present("pr");
+            git_chain.list_chains(&current_branch, show_prs)?;
         }
         ("move", Some(sub_matches)) => {
             // Move current branch or chain.
@@ -2010,7 +2011,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             let chain = Chain::get_chain(&git_chain, &chain_name)?;
             let current_branch = git_chain.get_current_branch_name()?;
-            chain.display_list(&git_chain, &current_branch, false)?; // TODO instead of false, also parameterize the list-chains subcommand
+            chain.display_list(&git_chain, &current_branch, false)?;
         }
         ("first", Some(_sub_matches)) => {
             // Switch to the first branch of the chain.
@@ -2390,6 +2391,16 @@ where
                 .takes_value(false),
         );
 
+    let list_subcommand = SubCommand::with_name("list")
+        .about("List all chains.")
+        .arg(
+            Arg::with_name("pr")
+                .short("p")
+                .long("pr")
+                .help("Show open pull requests for each branch in the chains")
+                .takes_value(false),
+        );
+
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
         .version("0.0.9")
@@ -2405,7 +2416,7 @@ where
         .subcommand(rename_subcommand)
         .subcommand(pr_subcommand)
         .subcommand(status_subcommand)
-        .subcommand(SubCommand::with_name("list").about("List all chains."))
+        .subcommand(list_subcommand)
         .subcommand(
             SubCommand::with_name("backup").about("Back up all branches of the current chain."),
         )
