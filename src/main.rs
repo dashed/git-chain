@@ -225,12 +225,12 @@ impl Branch {
         Ok(())
     }
 
-    fn display_status(&self, git_chain: &GitChain) -> Result<(), Error> {
+    fn display_status(&self, git_chain: &GitChain, show_prs: bool) -> Result<(), Error> {
         let chain = Chain::get_chain(git_chain, &self.chain_name)?;
 
         let current_branch = git_chain.get_current_branch_name()?;
 
-        chain.display_list(git_chain, &current_branch)?;
+        chain.display_list(git_chain, &current_branch, show_prs)?;
 
         Ok(())
     }
@@ -487,7 +487,7 @@ impl Chain {
         Ok(status)
     }
 
-    fn display_list(&self, git_chain: &GitChain, current_branch: &str) -> Result<(), Error> {
+    fn display_list(&self, git_chain: &GitChain, current_branch: &str, show_prs: bool) -> Result<(), Error> {
         println!("{}", self.name);
 
         let mut branches = self.branches.clone();
@@ -509,8 +509,13 @@ impl Chain {
             let ahead_behind_status =
                 self.display_ahead_behind(git_chain, upstream, &branch.branch_name)?;
 
-            let status_line: String;
-            if check_gh_cli_installed().is_ok() {
+            let mut status_line = if ahead_behind_status.is_empty() {
+                format!("{:>6}{}", marker, branch_name)
+            } else {
+                format!("{:>6}{} ⦁ {}", marker, branch_name, ahead_behind_status)
+            };
+
+            if show_prs && check_gh_cli_installed().is_ok() {
                 // Check for open pull requests for each branch
                 let output = Command::new("gh")
                     .arg("pr")
@@ -521,7 +526,7 @@ impl Chain {
                     .arg("url")
                     .output();
 
-                let pr_status = match output {
+                match output {
                     Ok(output) if output.status.success() => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
@@ -533,29 +538,15 @@ impl Chain {
                                 .map(|url| format!("{}", url))
                                 .collect::<Vec<String>>()
                                 .join("; ");
-                            format!(" ({})", pr_list)
-                        } else {
-                            String::new()
+                            status_line.push_str(&format!(" ({})", pr_list));
                         }
                     }
                     _ => {
                         eprintln!("  Failed to retrieve PRs for branch {}.", branch.branch_name.bold());
-                        String::new()
                     }
-                };
-
-                status_line = if ahead_behind_status.is_empty() && pr_status.is_empty() {
-                    format!("{:>6}{}", marker, branch_name)
-                } else {
-                    format!("{:>6}{} ⦁ {}{}", marker, branch_name, ahead_behind_status, pr_status)
-                };
-            } else {
-                status_line = if ahead_behind_status.is_empty() {
-                    format!("{:>6}{}", marker, branch_name)
-                } else {
-                    format!("{:>6}{} ⦁ {}", marker, branch_name, ahead_behind_status)
-                };
+                }
             }
+
             println!("{}", status_line.trim_end());
         }
 
@@ -829,7 +820,7 @@ impl GitChain {
         );
     }
 
-    fn run_status(&self) -> Result<(), Error> {
+    fn run_status(&self, show_prs: bool) -> Result<(), Error> {
         let branch_name = self.get_current_branch_name()?;
         println!("On branch: {}", branch_name.bold());
         println!();
@@ -842,7 +833,7 @@ impl GitChain {
                 process::exit(1);
             }
             BranchSearchResult::Branch(branch) => {
-                branch.display_status(self)?;
+                branch.display_status(self, show_prs)?;
             }
         }
 
@@ -870,7 +861,7 @@ impl GitChain {
                     BranchSearchResult::Branch(branch) => {
                         println!("🔗 Succesfully set up branch: {}", branch_name.bold());
                         println!();
-                        branch.display_status(self)?;
+                        branch.display_status(self, false)?;
                     }
                 };
             }
@@ -916,7 +907,7 @@ impl GitChain {
         Ok(())
     }
 
-    fn list_chains(&self, current_branch: &str) -> Result<(), Error> {
+    fn list_chains(&self, current_branch: &str, show_prs: bool) -> Result<(), Error> {
         let list = Chain::get_all_chains(self)?;
 
         if list.is_empty() {
@@ -929,7 +920,7 @@ impl GitChain {
         }
 
         for (index, chain) in list.iter().enumerate() {
-            chain.display_list(self, current_branch)?;
+            chain.display_list(self, current_branch, show_prs)?;
 
             if index != list.len() - 1 {
                 println!();
@@ -961,7 +952,7 @@ impl GitChain {
                     BranchSearchResult::Branch(branch) => {
                         println!("🔗 Succesfully moved branch: {}", branch.branch_name.bold());
                         println!();
-                        branch.display_status(self)?;
+                        branch.display_status(self, false)?;
                     }
                 };
             }
@@ -1747,7 +1738,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
         ("list", Some(_sub_matches)) => {
             // List all chains.
             let current_branch = git_chain.get_current_branch_name()?;
-            git_chain.list_chains(&current_branch)?
+            git_chain.list_chains(&current_branch, false)? // TODO instead of false, also parameterize the list-chains subcommand
         }
         ("move", Some(sub_matches)) => {
             // Move current branch or chain.
@@ -2019,7 +2010,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             let chain = Chain::get_chain(&git_chain, &chain_name)?;
             let current_branch = git_chain.get_current_branch_name()?;
-            chain.display_list(&git_chain, &current_branch)?;
+            chain.display_list(&git_chain, &current_branch, false)?; // TODO instead of false, also parameterize the list-chains subcommand
         }
         ("first", Some(_sub_matches)) => {
             // Switch to the first branch of the chain.
@@ -2196,8 +2187,12 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let draft = sub_matches.is_present("draft");
             git_chain.pr(&branch.chain_name, draft)?;
         }
+        ("status", Some(sub_matches)) => {
+            let show_prs = sub_matches.is_present("pr");
+            git_chain.run_status(show_prs)?;
+        }
         _ => {
-            git_chain.run_status()?;
+            git_chain.run_status(false)?;
         }
     }
 
@@ -2385,6 +2380,16 @@ where
                 .takes_value(false),
         );
 
+    let status_subcommand = SubCommand::with_name("status")
+        .about("Display the status of the current branch and its chain.")
+        .arg(
+            Arg::with_name("pr")
+                .short("p")
+                .long("pr")
+                .help("Show open pull requests for the branch")
+                .takes_value(false),
+        );
+
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
         .version("0.0.9")
@@ -2399,6 +2404,7 @@ where
         .subcommand(setup_subcommand)
         .subcommand(rename_subcommand)
         .subcommand(pr_subcommand)
+        .subcommand(status_subcommand)
         .subcommand(SubCommand::with_name("list").about("List all chains."))
         .subcommand(
             SubCommand::with_name("backup").about("Back up all branches of the current chain."),
