@@ -1,6 +1,8 @@
 use git2::ConfigLevel;
 
+#[path = "common/mod.rs"]
 pub mod common;
+
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, delete_local_branch,
     first_commit_all, generate_path_to_repo, setup_git_repo, teardown_git_repo,

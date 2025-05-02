@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+#[path = "common/mod.rs"]
 pub mod common;
+
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
     generate_path_to_bare_repo, generate_path_to_repo, get_current_branch_name, run_git_command,
