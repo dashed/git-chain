@@ -1094,7 +1094,7 @@ impl GitChain {
         //     .arg("rev-parse")
         //     .arg(format!("{}^{{tree}}", branch_name))
         //     .output()
-        //     .unwrap_or_else(|_| panic!("Unable to get tree id of branch {}", branch_name.bold()));
+        //     .unwrap_or_else(|_| panic!("Unable to get tree id of branch {}", branch_name.bold())));
 
         // if output.status.success() {
         //     let raw_output = String::from_utf8(output.stdout).unwrap();
@@ -2254,6 +2254,31 @@ impl GitChain {
                 } else {
                     &chain.branches[i - 1].branch_name
                 };
+
+                // Check for existing open PRs for the branch
+                let output = Command::new("gh")
+                    .arg("pr")
+                    .arg("list")
+                    .arg("--head")
+                    .arg(&branch.branch_name)
+                    .arg("--json")
+                    .arg("url")
+                    .output();
+
+                match output {
+                    Ok(output) if output.status.success() => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
+                        if !pr_objects.is_empty() {
+                            println!("🔗 Open PR already exists for branch {}", branch.branch_name.bold());
+                            continue;
+                        }
+                    }
+                    _ => {
+                        eprintln!("  Failed to check existing PRs for branch {}.", branch.branch_name.bold());
+                        continue;
+                    }
+                }
 
                 let mut gh_command = Command::new("gh");
                 gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
