@@ -648,6 +648,47 @@ impl Chain {
         }
         Ok(())
     }
+
+    fn pr(&self, chain_name: &str, draft: bool) -> Result<(), Error> {
+        if Chain::chain_exists(self, chain_name)? {
+            let chain = Chain::get_chain(self, chain_name)?;
+
+            for (i, branch) in chain.branches.iter().enumerate() {
+                let base_branch = if i == 0 {
+                    &chain.root_branch
+                } else {
+                    &chain.branches[i - 1].branch_name
+                };
+
+                let mut gh_command = Command::new("gh");
+                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
+
+                if draft {
+                    gh_command.arg("--draft");
+                }
+
+                let output = gh_command.output().unwrap_or_else(|_| {
+                    panic!(
+                        "Unable to create pull request for branch {}",
+                        branch.branch_name.bold()
+                    )
+                });
+
+                if output.status.success() {
+                    println!("✅ Created PR for {} -> {}", branch.branch_name.bold(), base_branch.bold());
+                } else {
+                    io::stdout().write_all(&output.stdout).unwrap();
+                    io::stderr().write_all(&output.stderr).unwrap();
+                    println!("🛑 Failed to create PR for {}", branch.branch_name.bold());
+                }
+            }
+        } else {
+            eprintln!("Unable to create PRs for the chain.");
+            eprintln!("Chain does not exist: {}", chain_name);
+            process::exit(1);
+        }
+        Ok(())
+    }
 }
 
 struct GitChain {
@@ -1502,6 +1543,47 @@ impl GitChain {
 
         Ok(common_point == ancestor_object.id())
     }
+
+    fn pr(&self, chain_name: &str, draft: bool) -> Result<(), Error> {
+        if Chain::chain_exists(self, chain_name)? {
+            let chain = Chain::get_chain(self, chain_name)?;
+
+            for (i, branch) in chain.branches.iter().enumerate() {
+                let base_branch = if i == 0 {
+                    &chain.root_branch
+                } else {
+                    &chain.branches[i - 1].branch_name
+                };
+
+                let mut gh_command = Command::new("gh");
+                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
+
+                if draft {
+                    gh_command.arg("--draft");
+                }
+
+                let output = gh_command.output().unwrap_or_else(|_| {
+                    panic!(
+                        "Unable to create pull request for branch {}",
+                        branch.branch_name.bold()
+                    )
+                });
+
+                if output.status.success() {
+                    println!("✅ Created PR for {} -> {}", branch.branch_name.bold(), base_branch.bold());
+                } else {
+                    io::stdout().write_all(&output.stdout).unwrap();
+                    io::stderr().write_all(&output.stderr).unwrap();
+                    println!("🛑 Failed to create PR for {}", branch.branch_name.bold());
+                }
+            }
+        } else {
+            eprintln!("Unable to create PRs for the chain.");
+            eprintln!("Chain does not exist: {}", chain_name);
+            process::exit(1);
+        }
+        Ok(())
+    }
 }
 
 fn parse_sort_option(
@@ -2098,6 +2180,11 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
+        ("pr", Some(sub_matches)) => {
+            let chain_name = sub_matches.value_of("chain_name").unwrap();
+            let draft = sub_matches.is_present("draft");
+            git_chain.pr(chain_name, draft)?;
+        }
         _ => {
             git_chain.run_status()?;
         }
@@ -2276,6 +2363,17 @@ where
                 .index(3),
         );
 
+    let pr_subcommand = SubCommand::with_name("pr")
+        .about("Create a pull request for each branch in the current chain using the GitHub CLI.")
+        .arg(
+            Arg::with_name("draft")
+                .short("d")
+                .long("draft")
+                .value_name("draft")
+                .help("Create pull requests as drafts")
+                .takes_value(false),
+        );
+
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
         .version("0.0.9")
@@ -2289,6 +2387,7 @@ where
         .subcommand(prune_subcommand)
         .subcommand(setup_subcommand)
         .subcommand(rename_subcommand)
+        .subcommand(pr_subcommand)
         .subcommand(SubCommand::with_name("list").about("List all chains."))
         .subcommand(
             SubCommand::with_name("backup").about("Back up all branches of the current chain."),
