@@ -2270,7 +2270,11 @@ impl GitChain {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
                         if !pr_objects.is_empty() {
-                            println!("🔗 Open PR already exists for branch {}", branch.branch_name.bold());
+                            if let Some(pr_url) = pr_objects.get(0).and_then(|pr| pr.get("url")).and_then(|url| url.as_str()) {
+                                println!("🔗 Open PR already exists for branch {}: {}", branch.branch_name.bold(), pr_url);
+                            } else {
+                                println!("🔗 Open PR already exists for branch {}", branch.branch_name.bold());
+                            }
                             continue;
                         }
                     }
@@ -2280,8 +2284,28 @@ impl GitChain {
                     }
                 }
 
+                // Ensure the branch is pushed before creating a PR, because gh pr create --web drops into an interactive shell that this script doesn't handle correctly
+                let push_output = Command::new("git")
+                    .arg("push")
+                    .arg("origin")
+                    .arg(&branch.branch_name)
+                    .output();
+
+                if let Err(e) = push_output {
+                    eprintln!("Failed to push branch {}: {}", branch.branch_name.bold(), e);
+                    continue;
+                } else {
+                    let unwrapped_push_output = push_output.unwrap();
+                    if !unwrapped_push_output.status.success() {
+                        eprintln!("Failed to push branch {}: {}", branch.branch_name.bold(), String::from_utf8_lossy(&unwrapped_push_output.stderr));
+                        continue;
+                    }
+                } 
+
+                println!("Pushed branch {}, creating PR...", branch.branch_name.bold());
+
                 let mut gh_command = Command::new("gh");
-                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
+                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name).arg("--web");
 
                 if draft {
                     gh_command.arg("--draft");
