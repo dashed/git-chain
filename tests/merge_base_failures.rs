@@ -12,6 +12,7 @@ use git2::RepositoryState;
 /// that can confuse fork-point detection.
 #[test]
 fn test_complex_rebased_remote_history() {
+    std::env::set_var("LANG", "C");
     let repo_name = "complex_rebased_remote";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
