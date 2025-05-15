@@ -626,24 +626,37 @@ impl Chain {
                 let output = Command::new("gh")
                     .arg("pr")
                     .arg("list")
+                    .arg("--state")
+                    .arg("all")
                     .arg("--head")
                     .arg(&branch.branch_name)
                     .arg("--json")
-                    .arg("url")
+                    .arg("url,state")
                     .output();
 
                 match output {
                     Ok(output) if output.status.success() => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
-                        let pr_urls: Vec<String> = pr_objects.iter().filter_map(|pr| pr.get("url").and_then(|url| url.as_str()).map(String::from)).collect();
+                        let pr_details: Vec<String> = pr_objects.iter().filter_map(|pr| {
+                            let url = pr.get("url").and_then(|url| url.as_str());
+                            let state = pr.get("state").and_then(|state| state.as_str());
+                            match (url, state) {
+                                (Some(url), Some(state)) => {
+                                    let colored_state = match state {
+                                        "MERGED" => "Merged".purple().to_string(),
+                                        "OPEN" => "Open".green().to_string(),
+                                        "CLOSED" => "Closed".red().to_string(),
+                                        _ => state.to_string(),
+                                    };
+                                    Some(format!("{} [{}]", url, colored_state))
+                                },
+                                _ => None,
+                            }
+                        }).collect();
 
-                        if !pr_urls.is_empty() {
-                            let pr_list = pr_urls
-                                .iter()
-                                .map(|url| format!("{}", url))
-                                .collect::<Vec<String>>()
-                                .join("; ");
+                        if !pr_details.is_empty() {
+                            let pr_list = pr_details.join("; ");
                             status_line.push_str(&format!(" ({})", pr_list));
                         }
                     }
