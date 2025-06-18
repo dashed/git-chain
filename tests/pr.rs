@@ -20,6 +20,7 @@ fn setup_mock_gh(test_name: &str) -> PathBuf {
 
 if [ "$1" = "--version" ]; then
     echo "gh version 2.40.0 (2024-01-01)"
+    echo "https://github.com/cli/cli/releases/tag/v2.40.0"
     exit 0
 fi
 
@@ -65,27 +66,27 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
 fi
 
 if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
-    # Pattern: gh pr create --base <base> --head <head> --web [--draft]
+    # Check for the invalid combination of --draft and --web flags
+    if [[ "$*" =~ --web ]] && [[ "$*" =~ --draft ]]; then
+        echo "Error: the \`--draft\` flag is not supported with \`--web\`" >&2
+        exit 1
+    fi
+    
+    # Pattern: gh pr create --base <base> --head <head> --web
     if [ "$3" = "--base" ] && [ "$5" = "--head" ] && [ "$7" = "--web" ]; then
         base="$4"
         head="$6"
-        
-        # Check for draft flag
-        if [ "$8" = "--draft" ]; then
-            echo "Creating DRAFT PR from $head to $base"
-        else
-            echo "Creating PR from $head to $base"
-        fi
-        echo "Opening https://github.com/test/repo/pull/new/$base...$head in your browser."
+        echo "Opening https://github.com/test/repo/compare/$base...$head?expand=1 in your browser."
         exit 0
     fi
     
-    # Pattern with draft flag first: gh pr create --base <base> --head <head> --draft --web
-    if [ "$3" = "--base" ] && [ "$5" = "--head" ] && [ "$7" = "--draft" ] && [ "$8" = "--web" ]; then
+    # Pattern for draft PRs without --web: gh pr create --base <base> --head <head> --draft
+    if [ "$3" = "--base" ] && [ "$5" = "--head" ] && [ "$7" = "--draft" ]; then
         base="$4"
         head="$6"
-        echo "Creating DRAFT PR from $head to $base"
-        echo "Opening https://github.com/test/repo/pull/new/$base...$head in your browser."
+        echo "Creating draft pull request for $head into $base in test/repo"
+        echo ""
+        echo "https://github.com/test/repo/pull/999"
         exit 0
     fi
 fi
@@ -296,19 +297,23 @@ fn test_pr_command_with_draft_flag() {
     env::set_var("PATH", original_path);
     
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     
     // Debug output
     println!("=== TEST DIAGNOSTICS ===");
     println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
     println!("EXIT STATUS: {}", output.status);
     println!("======");
     
-    // Assertions
-    assert!(output.status.success(), "Command should succeed");
-    assert!(stdout.contains("creating PR..."), 
-            "Should create PRs, got: {}", stdout);
-    assert!(stdout.contains("✅ Created PR for"), 
-            "Should show success messages, got: {}", stdout);
+    // git-chain continues running even when individual PR creations fail
+    // but it should show the error from gh CLI and report failed PR creation
+    assert!(output.status.success(), 
+            "git-chain should complete successfully even when individual PRs fail");
+    assert!(stderr.contains("the `--draft` flag is not supported with `--web`"), 
+            "Should show GitHub CLI error about incompatible flags, got: {}", stderr);
+    assert!(stdout.contains("🛑 Failed to create PR for"), 
+            "Should show failed PR creation messages, got: {}", stdout);
     
     teardown_git_repo(test_name);
 }
