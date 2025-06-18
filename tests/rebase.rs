@@ -1077,6 +1077,7 @@ chain_name
 
 #[test]
 fn rebase_no_forkpoint() {
+    std::env::set_var("LANG", "C");
     let repo_name = "rebase_no_forkpoint";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
