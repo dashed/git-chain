@@ -593,7 +593,12 @@ impl Chain {
         Ok(status)
     }
 
-    fn display_list(&self, git_chain: &GitChain, current_branch: &str, show_prs: bool) -> Result<(), Error> {
+    fn display_list(
+        &self,
+        git_chain: &GitChain,
+        current_branch: &str,
+        show_prs: bool,
+    ) -> Result<(), Error> {
         println!("{}", self.name);
 
         let mut branches = self.branches.clone();
@@ -637,23 +642,27 @@ impl Chain {
                 match output {
                     Ok(output) if output.status.success() => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
-                        let pr_details: Vec<String> = pr_objects.iter().filter_map(|pr| {
-                            let url = pr.get("url").and_then(|url| url.as_str());
-                            let state = pr.get("state").and_then(|state| state.as_str());
-                            match (url, state) {
-                                (Some(url), Some(state)) => {
-                                    let colored_state = match state {
-                                        "MERGED" => "Merged".purple().to_string(),
-                                        "OPEN" => "Open".green().to_string(),
-                                        "CLOSED" => "Closed".red().to_string(),
-                                        _ => state.to_string(),
-                                    };
-                                    Some(format!("{} [{}]", url, colored_state))
-                                },
-                                _ => None,
-                            }
-                        }).collect();
+                        let pr_objects: Vec<serde_json::Value> =
+                            serde_json::from_str(&stdout).unwrap_or_default();
+                        let pr_details: Vec<String> = pr_objects
+                            .iter()
+                            .filter_map(|pr| {
+                                let url = pr.get("url").and_then(|url| url.as_str());
+                                let state = pr.get("state").and_then(|state| state.as_str());
+                                match (url, state) {
+                                    (Some(url), Some(state)) => {
+                                        let colored_state = match state {
+                                            "MERGED" => "Merged".purple().to_string(),
+                                            "OPEN" => "Open".green().to_string(),
+                                            "CLOSED" => "Closed".red().to_string(),
+                                            _ => state.to_string(),
+                                        };
+                                        Some(format!("{} [{}]", url, colored_state))
+                                    }
+                                    _ => None,
+                                }
+                            })
+                            .collect();
 
                         if !pr_details.is_empty() {
                             let pr_list = pr_details.join("; ");
@@ -661,7 +670,10 @@ impl Chain {
                         }
                     }
                     _ => {
-                        eprintln!("  Failed to retrieve PRs for branch {}.", branch.branch_name.bold());
+                        eprintln!(
+                            "  Failed to retrieve PRs for branch {}.",
+                            branch.branch_name.bold()
+                        );
                     }
                 }
             }
@@ -2281,18 +2293,33 @@ impl GitChain {
                 match output {
                     Ok(output) if output.status.success() => {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        let pr_objects: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap_or_default();
+                        let pr_objects: Vec<serde_json::Value> =
+                            serde_json::from_str(&stdout).unwrap_or_default();
                         if !pr_objects.is_empty() {
-                            if let Some(pr_url) = pr_objects.get(0).and_then(|pr| pr.get("url")).and_then(|url| url.as_str()) {
-                                println!("🔗 Open PR already exists for branch {}: {}", branch.branch_name.bold(), pr_url);
+                            if let Some(pr_url) = pr_objects
+                                .get(0)
+                                .and_then(|pr| pr.get("url"))
+                                .and_then(|url| url.as_str())
+                            {
+                                println!(
+                                    "🔗 Open PR already exists for branch {}: {}",
+                                    branch.branch_name.bold(),
+                                    pr_url
+                                );
                             } else {
-                                println!("🔗 Open PR already exists for branch {}", branch.branch_name.bold());
+                                println!(
+                                    "🔗 Open PR already exists for branch {}",
+                                    branch.branch_name.bold()
+                                );
                             }
                             continue;
                         }
                     }
                     _ => {
-                        eprintln!("  Failed to check existing PRs for branch {}.", branch.branch_name.bold());
+                        eprintln!(
+                            "  Failed to check existing PRs for branch {}.",
+                            branch.branch_name.bold()
+                        );
                         continue;
                     }
                 }
@@ -2310,15 +2337,28 @@ impl GitChain {
                 } else {
                     let unwrapped_push_output = push_output.unwrap();
                     if !unwrapped_push_output.status.success() {
-                        eprintln!("Failed to push branch {}: {}", branch.branch_name.bold(), String::from_utf8_lossy(&unwrapped_push_output.stderr));
+                        eprintln!(
+                            "Failed to push branch {}: {}",
+                            branch.branch_name.bold(),
+                            String::from_utf8_lossy(&unwrapped_push_output.stderr)
+                        );
                         continue;
                     }
-                } 
+                }
 
-                println!("Pushed branch {}, creating PR...", branch.branch_name.bold());
+                println!(
+                    "Pushed branch {}, creating PR...",
+                    branch.branch_name.bold()
+                );
 
                 let mut gh_command = Command::new("gh");
-                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
+                gh_command
+                    .arg("pr")
+                    .arg("create")
+                    .arg("--base")
+                    .arg(base_branch)
+                    .arg("--head")
+                    .arg(&branch.branch_name);
 
                 // For draft PRs, we can't use --web flag due to GitHub CLI limitation
                 // Instead, we'll create the draft PR and then open it separately
@@ -2336,17 +2376,19 @@ impl GitChain {
                 });
 
                 if output.status.success() {
-                    println!("✅ Created PR for {} -> {}", branch.branch_name.bold(), base_branch.bold());
-                    
+                    println!(
+                        "✅ Created PR for {} -> {}",
+                        branch.branch_name.bold(),
+                        base_branch.bold()
+                    );
+
                     // If draft mode, open the PR in browser separately
                     if draft {
                         let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         if let Some(pr_number) = pr_url.split('/').last() {
-                            let browse_output = Command::new("gh")
-                                .arg("browse")
-                                .arg(pr_number)
-                                .output();
-                            
+                            let browse_output =
+                                Command::new("gh").arg("browse").arg(pr_number).output();
+
                             match browse_output {
                                 Ok(browse_result) if browse_result.status.success() => {
                                     println!("🌐 Opened draft PR in browser");
@@ -2971,7 +3013,7 @@ fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult:: NotPartOfAnyChain => {
+                BranchSearchResult::NotPartOfAnyChain => {
                     git_chain.display_branch_not_part_of_chain_error(&branch_name);
                     process::exit(1);
                 }
@@ -3280,15 +3322,13 @@ where
                 .takes_value(false),
         );
 
-    let list_subcommand = SubCommand::with_name("list")
-        .about("List all chains.")
-        .arg(
-            Arg::with_name("pr")
-                .short("p")
-                .long("pr")
-                .help("Show open pull requests for each branch in the chains")
-                .takes_value(false),
-        );
+    let list_subcommand = SubCommand::with_name("list").about("List all chains.").arg(
+        Arg::with_name("pr")
+            .short("p")
+            .long("pr")
+            .help("Show open pull requests for each branch in the chains")
+            .takes_value(false),
+    );
 
     // Merge with comprehensive options
     let merge_subcommand = SubCommand::with_name("merge")
