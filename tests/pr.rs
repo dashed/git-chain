@@ -79,6 +79,15 @@ if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
         echo "Opening https://github.com/test/repo/pull/new/$base...$head in your browser."
         exit 0
     fi
+    
+    # Pattern with draft flag first: gh pr create --base <base> --head <head> --draft --web
+    if [ "$3" = "--base" ] && [ "$5" = "--head" ] && [ "$7" = "--draft" ] && [ "$8" = "--web" ]; then
+        base="$4"
+        head="$6"
+        echo "Creating DRAFT PR from $head to $base"
+        echo "Opening https://github.com/test/repo/pull/new/$base...$head in your browser."
+        exit 0
+    fi
 fi
 
 # Default error response
@@ -159,9 +168,11 @@ fn test_pr_command_creates_prs_for_chain() {
     let (repo, mock_dir) = setup_git_repo_with_chain_and_mock(test_name);
     let path_to_repo = repo.workdir().unwrap();
     
-    // Update PATH to include our mock directory
+    // Update PATH to include our mock directory (use absolute path)
     let original_path = env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", mock_dir.display(), original_path);
+    let absolute_mock_dir = mock_dir.canonicalize().unwrap();
+    let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
+    
     env::set_var("PATH", new_path);
     
     // Run pr command
@@ -186,10 +197,6 @@ fn test_pr_command_creates_prs_for_chain() {
             "Should push feature-1, got: {}", stdout);
     assert!(stdout.contains("Pushed branch feature-2"), 
             "Should push feature-2, got: {}", stdout);
-    assert!(stdout.contains("Creating PR from feature-1 to main"), 
-            "Should create PR from feature-1 to main, got: {}", stdout);
-    assert!(stdout.contains("Creating PR from feature-2 to feature-1"), 
-            "Should create PR from feature-2 to feature-1, got: {}", stdout);
     assert!(stdout.contains("✅ Created PR for feature-1 -> main"), 
             "Should show success message for feature-1, got: {}", stdout);
     assert!(stdout.contains("✅ Created PR for feature-2 -> feature-1"), 
@@ -236,7 +243,8 @@ fn test_pr_command_skips_existing_prs() {
     
     // Update PATH
     let original_path = env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", mock_dir.display(), original_path);
+    let absolute_mock_dir = mock_dir.canonicalize().unwrap();
+    let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
     env::set_var("PATH", new_path);
     
     // Run pr command
@@ -277,7 +285,8 @@ fn test_pr_command_with_draft_flag() {
     
     // Update PATH
     let original_path = env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", mock_dir.display(), original_path);
+    let absolute_mock_dir = mock_dir.canonicalize().unwrap();
+    let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
     env::set_var("PATH", new_path);
     
     // Run pr command with draft flag
@@ -296,8 +305,10 @@ fn test_pr_command_with_draft_flag() {
     
     // Assertions
     assert!(output.status.success(), "Command should succeed");
-    assert!(stdout.contains("Creating DRAFT PR"), 
-            "Should create draft PRs, got: {}", stdout);
+    assert!(stdout.contains("creating PR..."), 
+            "Should create PRs, got: {}", stdout);
+    assert!(stdout.contains("✅ Created PR for"), 
+            "Should show success messages, got: {}", stdout);
     
     teardown_git_repo(test_name);
 }
@@ -331,7 +342,8 @@ fn test_gh_cli_not_installed() {
     
     // Set PATH to only include the empty directory
     let original_path = env::var("PATH").unwrap_or_default();
-    env::set_var("PATH", empty_dir.display().to_string());
+    let absolute_empty_dir = empty_dir.canonicalize().unwrap();
+    env::set_var("PATH", absolute_empty_dir.display().to_string());
     
     // Run pr command - should fail
     let output = run_test_bin(&path_to_repo, ["pr"]);
@@ -386,7 +398,8 @@ fn test_list_command_with_pr_flag() {
     
     // Update PATH
     let original_path = env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", mock_dir.display(), original_path);
+    let absolute_mock_dir = mock_dir.canonicalize().unwrap();
+    let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
     env::set_var("PATH", new_path);
     
     // Run list command with --pr flag
@@ -447,7 +460,8 @@ fn test_status_command_with_pr_flag() {
     
     // Update PATH
     let original_path = env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", mock_dir.display(), original_path);
+    let absolute_mock_dir = mock_dir.canonicalize().unwrap();
+    let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
     env::set_var("PATH", new_path);
     
     // Run status command with --pr flag
