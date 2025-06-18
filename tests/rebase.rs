@@ -1,5 +1,3 @@
-use console;
-
 use git2::RepositoryState;
 
 #[path = "common/mod.rs"]

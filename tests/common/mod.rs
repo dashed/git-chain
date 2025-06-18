@@ -18,6 +18,7 @@ where
     path_to_repo
 }
 
+#[allow(dead_code)]
 pub fn generate_path_to_bare_repo<S>(repo_name: S) -> PathBuf
 where
     S: Into<String>,
@@ -47,6 +48,7 @@ where
     repo
 }
 
+#[allow(dead_code)]
 pub fn setup_git_bare_repo<S>(repo_name: S) -> Repository
 where
     S: Into<String>,
@@ -72,6 +74,7 @@ where
     fs::remove_dir_all(&path_to_repo).ok();
 }
 
+#[allow(dead_code)]
 pub fn teardown_git_bare_repo<S>(repo_name: S)
 where
     S: Into<String>,
@@ -99,11 +102,13 @@ pub fn checkout_branch(repo: &Repository, branch_name: &str) {
         .unwrap();
 }
 
+#[allow(dead_code)]
 pub fn branch_exists(repo: &Repository, branch_name: &str) -> bool {
     repo.revparse_single(&("refs/heads/".to_owned() + branch_name))
         .is_ok()
 }
 
+#[allow(dead_code)]
 pub fn branch_equal(repo: &Repository, branch_name: &str, other_branch: &str) -> bool {
     let obj = repo
         .revparse_single(&format!("{}^{{commit}}", branch_name))
@@ -169,6 +174,7 @@ pub fn commit_all(repo: &Repository, message: &str) {
     create_commit(repo, root_tree_oid, message);
 }
 
+#[allow(dead_code)]
 pub fn delete_local_branch(repo: &Repository, branch_name: &str) {
     let mut some_branch = repo.find_branch(branch_name, BranchType::Local).unwrap();
 
@@ -178,6 +184,7 @@ pub fn delete_local_branch(repo: &Repository, branch_name: &str) {
     some_branch.delete().unwrap();
 }
 
+#[allow(dead_code)]
 pub fn get_current_branch_name(repo: &Repository) -> String {
     let head = repo.head().unwrap();
     head.shorthand().unwrap().to_string()
@@ -194,9 +201,9 @@ pub fn create_new_file(path_to_repo: &Path, file_name: &str, file_contents: &str
     writeln!(file, "{}", file_contents).unwrap();
 }
 
+#[allow(dead_code)]
 pub fn append_file(path_to_repo: &Path, file_name: &str, file_contents: &str) {
     let mut file = OpenOptions::new()
-        .write(true)
         .append(true)
         .open(path_to_repo.join(file_name))
         .unwrap();
@@ -222,6 +229,7 @@ where
         .expect("Failed to run git-chain")
 }
 
+#[allow(dead_code)]
 pub fn run_test_bin_expect_err<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
 where
     I: IntoIterator<Item = T>,
@@ -257,11 +265,13 @@ where
     output
 }
 
+#[allow(dead_code)]
 pub fn display_outputs(output: &Output) {
     io::stdout().write_all(&output.stdout).unwrap();
     io::stderr().write_all(&output.stderr).unwrap();
 }
 
+#[allow(dead_code)]
 pub fn run_git_command<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
 where
     I: IntoIterator<Item = T>,
@@ -281,6 +291,7 @@ where
     output
 }
 
+#[allow(dead_code)]
 pub fn run_test_bin_for_rebase<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
 where
     I: IntoIterator<Item = T>,

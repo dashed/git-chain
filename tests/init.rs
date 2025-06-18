@@ -97,7 +97,7 @@ chain_name
         let count = {
             let mut iter = local_config.entries(Some(&config_chain_name)).unwrap();
             let mut count = 0;
-            while let Some(_) = iter.next() {
+            while iter.next().is_some() {
                 count += 1;
             }
             count
@@ -113,7 +113,7 @@ chain_name
         let count = {
             let mut iter = local_config.entries(Some(&config_chain_order)).unwrap();
             let mut count = 0;
-            while let Some(_) = iter.next() {
+            while iter.next().is_some() {
                 count += 1;
             }
             count
@@ -131,7 +131,7 @@ chain_name
         let count = {
             let mut iter = local_config.entries(Some(&config_root_branch)).unwrap();
             let mut count = 0;
-            while let Some(_) = iter.next() {
+            while iter.next().is_some() {
                 count += 1;
             }
             count

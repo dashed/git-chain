@@ -6827,7 +6827,7 @@ fn merge_subcommand_complex_conflicts() {
         );
 
         // Rather than asserting on a specific branch, verify it's a valid branch in our chain
-        let valid_chain_branches = vec!["master", "feature_1", "feature_2"];
+        let valid_chain_branches = ["master", "feature_1", "feature_2"];
         let is_valid_chain_branch = valid_chain_branches.contains(&branch_after_abort.as_str());
         assert!(
             is_valid_chain_branch,

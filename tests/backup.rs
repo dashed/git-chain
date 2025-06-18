@@ -108,14 +108,14 @@ fn backup_subcommand() {
     let args: Vec<&str> = vec!["init", "chain_name_2"];
     run_test_bin_expect_ok(&path_to_repo, args);
 
-    assert_eq!(
-        branch_exists(&repo, &backup_name("chain_name_2", "some_branch_2")),
-        false
-    );
-    assert_eq!(
-        branch_exists(&repo, &backup_name("chain_name_2", "some_branch_3")),
-        false
-    );
+    assert!(!branch_exists(
+        &repo,
+        &backup_name("chain_name_2", "some_branch_2")
+    ));
+    assert!(!branch_exists(
+        &repo,
+        &backup_name("chain_name_2", "some_branch_3")
+    ));
 
     let args: Vec<&str> = vec!["backup"];
     let output = run_test_bin_expect_ok(&path_to_repo, args);
@@ -156,13 +156,11 @@ fn backup_subcommand() {
         commit_all(&repo, "message");
     };
 
-    assert!(
-        branch_equal(
-            &repo,
-            "some_branch_3",
-            &backup_name("chain_name_2", "some_branch_3")
-        ) == false
-    );
+    assert!(!branch_equal(
+        &repo,
+        "some_branch_3",
+        &backup_name("chain_name_2", "some_branch_3")
+    ));
 
     let args: Vec<&str> = vec!["backup"];
     let output = run_test_bin_expect_ok(&path_to_repo, args);

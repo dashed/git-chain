@@ -13,7 +13,6 @@ use git2::{
 };
 use rand::Rng;
 use regex::Regex;
-use serde_json;
 
 // Merge options types
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -2297,7 +2296,7 @@ impl GitChain {
                             serde_json::from_str(&stdout).unwrap_or_default();
                         if !pr_objects.is_empty() {
                             if let Some(pr_url) = pr_objects
-                                .get(0)
+                                .first()
                                 .and_then(|pr| pr.get("url"))
                                 .and_then(|url| url.as_str())
                             {
@@ -2385,7 +2384,7 @@ impl GitChain {
                     // If draft mode, open the PR in browser separately
                     if draft {
                         let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                        if let Some(pr_number) = pr_url.split('/').last() {
+                        if let Some(pr_number) = pr_url.split('/').next_back() {
                             let browse_output =
                                 Command::new("gh").arg("browse").arg(pr_number).output();
 
