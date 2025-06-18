@@ -84,9 +84,16 @@ if [ "$1" = "pr" ] && [ "$2" = "create" ]; then
     if [ "$3" = "--base" ] && [ "$5" = "--head" ] && [ "$7" = "--draft" ]; then
         base="$4"
         head="$6"
-        echo "Creating draft pull request for $head into $base in test/repo"
-        echo ""
+        # Draft PR creation outputs the URL to stdout
         echo "https://github.com/test/repo/pull/999"
+        exit 0
+    fi
+fi
+
+if [ "$1" = "browse" ]; then
+    # gh browse <PR_NUMBER> - simulate opening PR in browser
+    if [ -n "$2" ]; then
+        echo "Opening https://github.com/test/repo/pull/$2 in your browser."
         exit 0
     fi
 fi
@@ -306,14 +313,13 @@ fn test_pr_command_with_draft_flag() {
     println!("EXIT STATUS: {}", output.status);
     println!("======");
     
-    // git-chain continues running even when individual PR creations fail
-    // but it should show the error from gh CLI and report failed PR creation
+    // With the fix, draft PRs should now work successfully
     assert!(output.status.success(), 
-            "git-chain should complete successfully even when individual PRs fail");
-    assert!(stderr.contains("the `--draft` flag is not supported with `--web`"), 
-            "Should show GitHub CLI error about incompatible flags, got: {}", stderr);
-    assert!(stdout.contains("🛑 Failed to create PR for"), 
-            "Should show failed PR creation messages, got: {}", stdout);
+            "Command should succeed with draft flag");
+    assert!(stdout.contains("✅ Created PR for"), 
+            "Should show successful PR creation, got: {}", stdout);
+    assert!(stdout.contains("🌐 Opened draft PR in browser") || stdout.contains("ℹ️  Draft PR created:"), 
+            "Should show browser opening or PR URL, got: {}", stdout);
     
     teardown_git_repo(test_name);
 }
@@ -364,7 +370,7 @@ fn test_gh_cli_not_installed() {
     println!("EXIT STATUS: {}", output.status);
     println!("======");
     
-    // Assertions
+    // Assertions - the command should fail when gh is not installed
     assert!(!output.status.success(), "Command should fail when gh is not installed");
     assert!(stderr.contains("GitHub CLI (gh) is not installed") || 
             stderr.contains("not found in the PATH"), 

@@ -2318,10 +2318,14 @@ impl GitChain {
                 println!("Pushed branch {}, creating PR...", branch.branch_name.bold());
 
                 let mut gh_command = Command::new("gh");
-                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name).arg("--web");
+                gh_command.arg("pr").arg("create").arg("--base").arg(base_branch).arg("--head").arg(&branch.branch_name);
 
+                // For draft PRs, we can't use --web flag due to GitHub CLI limitation
+                // Instead, we'll create the draft PR and then open it separately
                 if draft {
                     gh_command.arg("--draft");
+                } else {
+                    gh_command.arg("--web");
                 }
 
                 let output = gh_command.output().unwrap_or_else(|_| {
@@ -2333,6 +2337,26 @@ impl GitChain {
 
                 if output.status.success() {
                     println!("✅ Created PR for {} -> {}", branch.branch_name.bold(), base_branch.bold());
+                    
+                    // If draft mode, open the PR in browser separately
+                    if draft {
+                        let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if let Some(pr_number) = pr_url.split('/').last() {
+                            let browse_output = Command::new("gh")
+                                .arg("browse")
+                                .arg(pr_number)
+                                .output();
+                            
+                            match browse_output {
+                                Ok(browse_result) if browse_result.status.success() => {
+                                    println!("🌐 Opened draft PR in browser");
+                                }
+                                _ => {
+                                    println!("ℹ️  Draft PR created: {}", pr_url);
+                                }
+                            }
+                        }
+                    }
                 } else {
                     io::stdout().write_all(&output.stdout).unwrap();
                     io::stderr().write_all(&output.stderr).unwrap();
