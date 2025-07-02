@@ -297,6 +297,106 @@ fn merge_subcommand_simple() {
 }
 
 #[test]
+fn test_get_merge_commit_info_multiple_merges() {
+    let repo_name = "test_get_merge_commit_info_multiple_merges";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+    let original_cwd = std::env::current_dir().unwrap(); // Save CWD
+    std::env::set_current_dir(&path_to_repo).unwrap(); // Change CWD to repo path
+
+    // 1. Set up a Git repository with a `main` branch and a feature branch (e.g., `feat/test-merge-info`).
+    create_new_file(&path_to_repo, "initial.txt", "Initial content on main");
+    first_commit_all(&repo, "Initial commit on main");
+
+    create_branch(&repo, "feat/test-merge-info");
+    checkout_branch(&repo, "feat/test-merge-info");
+    create_new_file(&path_to_repo, "feature_initial.txt", "Initial content on feature branch");
+    commit_all(&repo, "Initial commit on feature branch");
+
+    // 2. Create a few commits on the `main` branch.
+    checkout_branch(&repo, "main");
+    create_new_file(&path_to_repo, "main_commit1.txt", "Main commit 1");
+    commit_all(&repo, "Main C1");
+    create_new_file(&path_to_repo, "main_commit2.txt", "Main commit 2");
+    commit_all(&repo, "Main C2");
+
+    // 3. Create a few commits on the `feat/test-merge-info` branch.
+    checkout_branch(&repo, "feat/test-merge-info");
+    create_new_file(&path_to_repo, "feat_commit1.txt", "Feature commit 1");
+    commit_all(&repo, "Feat C1");
+    create_new_file(&path_to_repo, "feat_commit2.txt", "Feature commit 2");
+    commit_all(&repo, "Feat C2");
+
+    // 4. Merge `main` into `feat/test-merge-info` (this will be the first merge commit).
+    // Add some file changes in this merge.
+    // The stats will reflect files from main brought into feat/test-merge-info.
+    // For this merge, main_commit1.txt and main_commit2.txt are new to feat/test-merge-info.
+    let merge_msg1 = "Merge main into feat/test-merge-info (1st)";
+    run_git_command(&path_to_repo, vec!["merge", "main", "--no-ff", "-m", merge_msg1]);
+
+    // 5. Create more commits on `main`.
+    checkout_branch(&repo, "main");
+    create_new_file(&path_to_repo, "main_commit3.txt", "Main commit 3");
+    commit_all(&repo, "Main C3");
+    create_new_file(&path_to_repo, "main_commit4.txt", "Main commit 4");
+    commit_all(&repo, "Main C4");
+
+    // 6. Create more commits on `feat/test-merge-info`.
+    checkout_branch(&repo, "feat/test-merge-info");
+    create_new_file(&path_to_repo, "feat_commit3.txt", "Feature commit 3");
+    commit_all(&repo, "Feat C3");
+
+    // 7. Merge `main` into `feat/test-merge-info` again (this will be the second merge commit).
+    // Add different file changes in this merge.
+    // For this merge, main_commit3.txt and main_commit4.txt are new to feat/test-merge-info.
+    let merge_msg2 = "Merge main into feat/test-merge-info (2nd)";
+    run_git_command(&path_to_repo, vec!["merge", "main", "--no-ff", "-m", merge_msg2]);
+
+    // 8. Call `get_merge_commit_info` with `parent_branch` as "main" and `branch_name` as "feat/test-merge-info".
+    // Need to instantiate GitChain for the current repo.
+    // The GitChain::init() discovers the repo from the current directory.
+    let git_chain_path = Path::new("."); // Relative to current_dir which is path_to_repo
+    let git_chain = git_chain::GitChain::init(git_chain_path).expect("Failed to init GitChain");
+    
+    let merge_infos_result = git_chain.get_merge_commit_info("main", "feat/test-merge-info");
+
+    // 9. Assert that the function returns `Ok` with a vector containing two `MergeCommitInfo` structs.
+    assert!(merge_infos_result.is_ok(), "get_merge_commit_info should return Ok");
+    let merge_infos = merge_infos_result.unwrap();
+    assert_eq!(merge_infos.len(), 2, "Should find 2 merge commits from main");
+
+    // 10. Assert that the extracted information (message, stats) for both merge commits is correct.
+    // Merge commits are typically listed in reverse chronological order by `git log`.
+    // The function as implemented iterates `git log` and then `git show` for each,
+    // so the order in `merge_infos` should be reverse chronological.
+
+    // Second merge (most recent)
+    let info2 = &merge_infos[0];
+    assert_eq!(info2.message, Some(merge_msg2.to_string()));
+    assert!(info2.stats.is_some(), "Stats should be present for the 2nd merge");
+    if let Some(stats) = &info2.stats {
+        // main_commit3.txt, main_commit4.txt are introduced.
+        // Exact insertions/deletions depend on line count, but files_changed should be 2.
+        assert_eq!(stats.files_changed, 2, "2nd merge: files_changed should be 2");
+        assert!(stats.insertions > 0, "2nd merge: insertions should be > 0");
+        // Deletions could be 0 if only new files are added.
+    }
+
+    // First merge
+    let info1 = &merge_infos[1];
+    assert_eq!(info1.message, Some(merge_msg1.to_string()));
+    assert!(info1.stats.is_some(), "Stats should be present for the 1st merge");
+    if let Some(stats) = &info1.stats {
+        // main_commit1.txt, main_commit2.txt are introduced.
+        assert_eq!(stats.files_changed, 2, "1st merge: files_changed should be 2");
+        assert!(stats.insertions > 0, "1st merge: insertions should be > 0");
+    }
+    
+    std::env::set_current_dir(original_cwd).unwrap(); // Restore CWD
+    teardown_git_repo(repo_name);
+}
+
+#[test]
 fn merge_subcommand_with_ahead_behind() {
     // Test that merge command works with branches that are ahead and behind
     let repo_name = "merge_subcommand_with_ahead_behind";

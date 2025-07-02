@@ -1782,9 +1782,9 @@ impl GitChain {
         parent_branch: &str,
         branch_name: &str,
     ) -> Result<Vec<MergeCommitInfo>, Error> {
-        // Get the latest commit on the branch
+        // 1. Fetch all commit hashes for the given `branch_name`.
         let mut command = Command::new("git");
-        command.args(["log", "--oneline", "-1", branch_name]);
+        command.args(["log", "--format=%H", branch_name]); // Get only commit hashes
         let output = match command.output() {
             Ok(output) => output,
             Err(_) => return Ok(vec![]), // Return empty vec on error
@@ -1794,92 +1794,101 @@ impl GitChain {
             return Ok(vec![]);
         }
 
-        let latest_commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if latest_commit.is_empty() {
+        let commit_hashes_str = String::from_utf8_lossy(&output.stdout);
+        let commit_hashes: Vec<&str> = commit_hashes_str.trim().lines().collect();
+
+        if commit_hashes.is_empty() {
             return Ok(vec![]);
         }
 
-        // Check if it's a merge commit by looking for parent commits
-        let commit_hash = latest_commit.split_whitespace().next().unwrap_or("");
-        if commit_hash.is_empty() {
-            return Ok(vec![]);
-        }
+        let mut merge_commits_info = Vec::new();
 
-        // Get commit information
-        let mut command = Command::new("git");
-        command.args(["show", "--stat", commit_hash]);
-        let output = match command.output() {
-            Ok(output) => output,
-            Err(_) => return Ok(vec![]),
-        };
+        // 2. Iterate through each commit hash.
+        for commit_hash in commit_hashes {
+            if commit_hash.is_empty() {
+                continue;
+            }
 
-        if !output.status.success() {
-            return Ok(vec![]);
-        }
+            // 3. For each commit, use `git show --stat <commit_hash>` to get its information.
+            let mut show_command = Command::new("git");
+            show_command.args(["show", "--stat", commit_hash]);
+            let show_output = match show_command.output() {
+                Ok(output) => output,
+                Err(_) => continue, // Skip this commit on error
+            };
 
-        let commit_info = String::from_utf8_lossy(&output.stdout).to_string();
+            if !show_output.status.success() {
+                continue; // Skip this commit on error
+            }
 
-        // Check if it's a merge commit, which typically contains "Merge" in the commit message
-        if commit_info.contains(&format!("Merge branch '{}'", parent_branch))
-            || commit_info.contains("Merge branch")
-        {
-            // Extract commit message (first line after commit hash)
-            let commit_lines: Vec<&str> = commit_info.lines().collect();
-            let message = commit_lines
+            let commit_info_str = String::from_utf8_lossy(&show_output.stdout).to_string();
+            let commit_lines: Vec<&str> = commit_info_str.lines().collect();
+
+            // 4. If the commit is a merge commit (contains "Merge branch" in its message AND refers to `parent_branch`),
+            //    extract its message and stats.
+            let merge_line_prefix = format!("Merge branch '{}'", parent_branch);
+            let is_merge_from_parent = commit_lines
                 .iter()
-                .position(|line| line.trim().starts_with("Merge branch"))
-                .map(|idx| commit_lines[idx].trim().to_string());
+                .any(|line| line.trim().starts_with(&merge_line_prefix));
 
-            // Extract stats
-            let stats_line = commit_lines
+            // Also check for generic "Merge branch" if parent_branch is empty (e.g. for initial merge to main)
+            // or if the specific format isn't exact.
+            let is_generic_merge = commit_lines
                 .iter()
-                .find(|line| line.contains("files changed") || line.contains("file changed"));
+                .any(|line| line.trim().starts_with("Merge branch"));
 
-            let stats = stats_line.map(|line| {
-                let mut files_changed = 0;
-                let mut insertions = 0;
-                let mut deletions = 0;
+            // A merge commit must have a line starting with "Merge: "
+            let is_actual_merge_commit = commit_lines.iter().any(|line| line.starts_with("Merge: "));
 
-                if let Some(files_idx) = line.find("file changed") {
-                    if let Some(files_num) = line[..files_idx].split_whitespace().last() {
-                        files_changed = files_num.parse().unwrap_or(0);
-                    }
-                } else if let Some(files_idx) = line.find("files changed") {
-                    if let Some(files_num) = line[..files_idx].split_whitespace().last() {
-                        files_changed = files_num.parse().unwrap_or(0);
-                    }
-                }
+            if is_actual_merge_commit && (is_merge_from_parent || (parent_branch.is_empty() && is_generic_merge)) {
+                // Extract commit message (the line starting with "Merge branch ...")
+                let message = commit_lines
+                    .iter()
+                    .find(|line| line.trim().starts_with("Merge branch"))
+                    .map(|line| line.trim().to_string());
 
-                if let Some(ins_idx) = line.find("insertion") {
-                    if let Some(ins_end) = line[..ins_idx].rfind(' ') {
-                        if let Some(ins_start) = line[..ins_end].rfind(' ') {
-                            let ins_str = &line[ins_start + 1..ins_end];
-                            insertions = ins_str.parse().unwrap_or(0);
+                // Extract stats (preserve existing logic, with slight refinement for parsing)
+                let stats_line = commit_lines
+                    .iter()
+                    .find(|line| line.contains("files changed") || line.contains("file changed"));
+
+                let stats = stats_line.map(|line| {
+                    let mut files_changed = 0;
+                    let mut insertions = 0;
+                    let mut deletions = 0;
+
+                    // Example line: "1 file changed, 5 insertions(+), 2 deletions(-)"
+                    // More robust parsing:
+                    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                    for part in parts {
+                        if part.contains("file changed") || part.contains("files changed") {
+                            if let Some(num_str) = part.split_whitespace().next() {
+                                files_changed = num_str.parse().unwrap_or(0);
+                            }
+                        } else if part.contains("insertion") {
+                            if let Some(num_str) = part.split_whitespace().next() {
+                                insertions = num_str.parse().unwrap_or(0);
+                            }
+                        } else if part.contains("deletion") {
+                            if let Some(num_str) = part.split_whitespace().next() {
+                                deletions = num_str.parse().unwrap_or(0);
+                            }
                         }
                     }
-                }
-
-                if let Some(del_idx) = line.find("deletion") {
-                    if let Some(del_end) = line[..del_idx].rfind(' ') {
-                        if let Some(del_start) = line[..del_end].rfind(' ') {
-                            let del_str = &line[del_start + 1..del_end];
-                            deletions = del_str.parse().unwrap_or(0);
-                        }
+                    MergeStats {
+                        files_changed,
+                        insertions,
+                        deletions,
                     }
-                }
+                });
 
-                MergeStats {
-                    files_changed,
-                    insertions,
-                    deletions,
-                }
-            });
-
-            return Ok(vec![MergeCommitInfo { message, stats }]);
+                merge_commits_info.push(MergeCommitInfo { message, stats });
+            }
         }
 
-        // It's not a merge commit
-        Ok(vec![])
+        // 5. Collect all `MergeCommitInfo` structs for the identified merge commits.
+        // 6. Return `Ok(Vec<MergeCommitInfo>)`
+        Ok(merge_commits_info)
     }
 
     fn report_merge_results(
