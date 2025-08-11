@@ -28,14 +28,14 @@ Git Chain automates this entire process. It keeps track of relationships between
 - **Root Branch**: The foundation branch (typically `main` or `master`) that the chain ultimately merges into.
 - **Branch Order**: The sequence in which branches depend on each other in the chain.
 
-**Note**: 
+**Note**:
 - A branch can belong to at most one chain.
 - The root branch is not part of the chain, but serves as its foundation.
 
 ## How Git Chain Works
 
 Git Chain stores branch relationships in your repository's Git config, tracking:
-- Which chain a branch belongs to 
+- Which chain a branch belongs to
 - The order of branches within a chain
 - Each branch's root branch
 
@@ -439,7 +439,7 @@ error: Merge conflict between feature/auth and feature/profiles
   ✅ Successful merges: 1
   ⚠️  Merge conflicts: 1
      - feature/auth into feature/profiles
-  
+
 ⚠️  Chain feature was partially merged with conflicts.
    Run `git status` to see conflicted files.
    After resolving conflicts, continue with regular git commands:
@@ -470,11 +470,7 @@ error: Merge conflict between feature/auth and feature/profiles
    ```
 3. Build the tool:
    ```
-   make build
-   ```
-4. Make it available on your system:
-   ```
-   cp target/release/git-chain /usr/local/bin/
+   make release
    ```
 
 This allows you to use the tool with:
@@ -634,7 +630,7 @@ git chain prune
 # Remove the current branch from its chain
 git chain remove
 
-# Remove the entire chain 
+# Remove the entire chain
 git chain remove --chain
 
 # Remove a specific chain
