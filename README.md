@@ -468,7 +468,7 @@ error: Merge conflict between feature/auth and feature/profiles
    git clone https://github.com/evansst/git-chain.git
    cd git-chain
    ```
-3. Build the tool:
+3. Install the tool:
    ```
    make install
    ```
