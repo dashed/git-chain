@@ -470,7 +470,7 @@ error: Merge conflict between feature/auth and feature/profiles
    ```
 3. Build the tool:
    ```
-   make release
+   make install
    ```
 
 This allows you to use the tool with:
