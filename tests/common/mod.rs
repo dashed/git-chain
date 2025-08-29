@@ -229,6 +229,33 @@ where
         .expect("Failed to run git-chain")
 }
 
+pub fn run_test_bin_with_env<I, T, E, K, V, P: AsRef<Path>>(
+    current_dir: P,
+    arguments: I,
+    env_vars: E,
+) -> Output
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<OsStr>,
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    let mut current_dir_buf: PathBuf = current_dir.as_ref().into();
+    if current_dir_buf.is_relative() {
+        current_dir_buf = current_dir_buf.canonicalize().unwrap();
+    }
+
+    let mut cmd =
+        assert_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to get git-chain");
+
+    cmd.current_dir(current_dir_buf)
+        .args(arguments)
+        .envs(env_vars);
+
+    cmd.output().expect("Failed to run git-chain")
+}
+
 #[allow(dead_code)]
 pub fn run_test_bin_expect_err<I, T, P: AsRef<Path>>(current_dir: P, arguments: I) -> Output
 where

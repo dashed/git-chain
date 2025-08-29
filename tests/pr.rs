@@ -183,13 +183,8 @@ fn test_pr_command_creates_prs_for_chain() {
     let absolute_mock_dir = mock_dir.canonicalize().unwrap();
     let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
 
-    env::set_var("PATH", new_path);
-
-    // Run pr command
-    let output = run_test_bin(path_to_repo, ["pr"]);
-
-    // Restore original PATH
-    env::set_var("PATH", original_path);
+    // Run pr command with modified PATH
+    let output = run_test_bin_with_env(path_to_repo, ["pr"], vec![("PATH", new_path)]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -321,13 +316,9 @@ fn test_pr_command_with_draft_flag() {
     let original_path = env::var("PATH").unwrap_or_default();
     let absolute_mock_dir = mock_dir.canonicalize().unwrap();
     let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
-    env::set_var("PATH", new_path);
 
-    // Run pr command with draft flag
-    let output = run_test_bin(path_to_repo, ["pr", "--draft"]);
-
-    // Restore original PATH
-    env::set_var("PATH", original_path);
+    // Run pr command with draft flag and modified PATH
+    let output = run_test_bin_with_env(path_to_repo, ["pr", "--draft"], vec![("PATH", new_path)]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -452,13 +443,9 @@ fn test_list_command_with_pr_flag() {
     let original_path = env::var("PATH").unwrap_or_default();
     let absolute_mock_dir = mock_dir.canonicalize().unwrap();
     let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
-    env::set_var("PATH", new_path);
 
-    // Run list command with --pr flag
-    let output = run_test_bin(path_to_repo, ["list", "--pr"]);
-
-    // Restore original PATH
-    env::set_var("PATH", original_path);
+    // Run list command with --pr flag, passing the modified PATH
+    let output = run_test_bin_with_env(path_to_repo, ["list", "--pr"], vec![("PATH", new_path)]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -523,13 +510,9 @@ fn test_status_command_with_pr_flag() {
     let original_path = env::var("PATH").unwrap_or_default();
     let absolute_mock_dir = mock_dir.canonicalize().unwrap();
     let new_path = format!("{}:{}", absolute_mock_dir.display(), original_path);
-    env::set_var("PATH", new_path);
 
-    // Run status command with --pr flag
-    let output = run_test_bin(path_to_repo, ["status", "--pr"]);
-
-    // Restore original PATH
-    env::set_var("PATH", original_path);
+    // Run status command with --pr flag and modified PATH
+    let output = run_test_bin_with_env(path_to_repo, ["status", "--pr"], vec![("PATH", new_path)]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
