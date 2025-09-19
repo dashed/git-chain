@@ -1438,24 +1438,22 @@ impl GitChain {
     }
 
     fn dirty_working_directory(&self) -> Result<bool, Error> {
-        // perform equivalent to git diff-index HEAD
-        let obj = self.repo.revparse_single("HEAD")?;
-        let tree = obj.peel(ObjectType::Tree)?;
+        use git2::StatusOptions;
 
-        // This is used for diff formatting for diff-index. But we're only interested in the diff stats.
-        // let mut opts = DiffOptions::new();
-        // opts.id_abbrev(40);
+        // Configure status collection so we can detect *any* change
+        // in the working directory. This mimics `git status --porcelain`
+        // by including untracked files and directories. Ignored files
+        // and paths that haven't changed are skipped so the resulting
+        // status list only contains meaningful modifications.
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false)
+            .include_unmodified(false);
 
-        let diff = self
-            .repo
-            .diff_tree_to_workdir_with_index(tree.as_tree(), None)?;
-
-        let diff_stats = diff.stats()?;
-        let has_changes = diff_stats.files_changed() > 0
-            || diff_stats.insertions() > 0
-            || diff_stats.deletions() > 0;
-
-        Ok(has_changes)
+        // If the repository reports no statuses, the working tree is clean.
+        let statuses = self.repo.statuses(Some(&mut opts))?;
+        Ok(!statuses.is_empty())
     }
 
     fn backup(&self, chain_name: &str) -> Result<(), Error> {
@@ -1477,11 +1475,15 @@ impl GitChain {
             }
 
             if self.dirty_working_directory()? {
+                let current_branch = self.get_current_branch_name()?;
                 eprintln!(
                     "🛑 Unable to back up branches for the chain: {}",
                     chain.name.bold()
                 );
-                eprintln!("You have uncommitted changes in your working directory.");
+                eprintln!(
+                    "You have uncommitted changes on branch {}.",
+                    current_branch.bold()
+                );
                 eprintln!("Please commit or stash them.");
                 process::exit(1);
             }
@@ -1687,9 +1689,11 @@ impl GitChain {
         }
 
         if self.dirty_working_directory()? {
-            return Err(Error::from_str(
-                "You have uncommitted changes in your working directory.",
-            ));
+            let current_branch = self.get_current_branch_name()?;
+            return Err(Error::from_str(&format!(
+                "You have uncommitted changes on branch {}.",
+                current_branch.bold()
+            )));
         }
 
         Ok(())
@@ -2065,9 +2069,11 @@ impl GitChain {
 
         // Check for uncommitted changes
         if self.dirty_working_directory()? {
+            let current_branch = self.get_current_branch_name()?;
             return Err(Error::from_str(&format!(
-                "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes in your working directory.\nPlease commit or stash them.",
-                chain_name.bold()
+                "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes on branch {}.\nPlease commit or stash them.",
+                chain_name.bold(),
+                current_branch.bold()
             )));
         }
 
