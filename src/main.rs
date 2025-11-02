@@ -1057,7 +1057,7 @@ impl GitChain {
         if list.is_empty() {
             println!("No chains to list.");
             println!(
-                "To initialize a chain for this branch, run {} init <root_branch> <chain_name>",
+                "To initialize a chain for this branch, run {} init <chain_name> <root_branch>",
                 self.executable_name
             );
             return Ok(());
