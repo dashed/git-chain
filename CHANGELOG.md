@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.12] - 2025-11-05
+
+### Fixed
+- Fixed test failures when users have custom `init.defaultBranch` git configuration ([#47](https://github.com/dashed/git-chain/pull/47))
+
 ## [0.0.11] - 2025-11-05
 
 ### Changed
@@ -36,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.9] - (Previous version)
 
-[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.10...HEAD
+[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.11...HEAD
+[0.0.12]: https://github.com/dashed/git-chain/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/dashed/git-chain/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/dashed/git-chain/compare/v0.0.9...v0.0.10
