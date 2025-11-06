@@ -215,6 +215,42 @@ bump-version: ## Bump version (use VERSION=0.1.0)
 	@sed -i '' 's/version = ".*"/version = "$(VERSION)"/' Cargo.toml
 	@cargo check
 	@echo "$(BOLD)$(GREEN)✓ Version bumped to $(VERSION)$(RESET)"
+	@echo "$(YELLOW)⚠  Don't forget to update CHANGELOG.md and commit changes$(RESET)"
+	@echo "$(YELLOW)⚠  Then run 'make tag-version' to create a git tag$(RESET)"
+
+tag-version: ## Create an annotated git tag for the current version
+	@VERSION=$$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/'); \
+	echo "$(BOLD)$(MAGENTA)Creating tag v$$VERSION...$(RESET)"; \
+	if git rev-parse "v$$VERSION" >/dev/null 2>&1; then \
+		echo "$(RED)✗ Tag v$$VERSION already exists$(RESET)"; \
+		exit 1; \
+	fi; \
+	git tag -a "v$$VERSION" -m "Release version $$VERSION"; \
+	echo "$(BOLD)$(GREEN)✓ Created tag v$$VERSION$(RESET)"; \
+	echo "$(YELLOW)⚠  Push the tag with: git push origin v$$VERSION$(RESET)"
+
+create-release: ## Complete release workflow (bump, tag, and prepare)
+	@echo "$(BOLD)$(CYAN)Starting release workflow...$(RESET)"
+	@echo ""
+	@if [ -z "$(VERSION)" ]; then \
+		echo "$(RED)Error: VERSION not specified$(RESET)"; \
+		echo "Usage: make create-release VERSION=0.1.0"; \
+		exit 1; \
+	fi
+	@echo "$(BOLD)Step 1: Bump version$(RESET)"
+	@$(MAKE) bump-version VERSION=$(VERSION)
+	@echo ""
+	@echo "$(BOLD)Step 2: Run CI checks$(RESET)"
+	@$(MAKE) ci-local
+	@echo ""
+	@echo "$(BOLD)$(YELLOW)Manual steps required:$(RESET)"
+	@echo "  1. Update CHANGELOG.md with release notes"
+	@echo "  2. Review changes: git diff"
+	@echo "  3. Commit: git add -A && git commit -m 'chore: Bump version to $(VERSION)'"
+	@echo "  4. Create tag: make tag-version"
+	@echo "  5. Push: git push && git push --tags"
+	@echo ""
+	@echo "$(BOLD)$(GREEN)Version bumped and tested. Complete manual steps above.$(RESET)"
 
 # === Testing Helpers ===
 
