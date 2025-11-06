@@ -30,7 +30,7 @@ fn list_subcommand() {
         String::from_utf8_lossy(&output.stdout),
         r#"
 No chains to list.
-To initialize a chain for this branch, run git chain init <root_branch> <chain_name>
+To initialize a chain for this branch, run git chain init <chain_name> <root_branch>
 "#
         .trim_start()
     );
