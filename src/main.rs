@@ -14,113 +14,11 @@ use git2::{
 use rand::Rng;
 use regex::Regex;
 
-// Merge options types
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum SquashedMergeHandling {
-    // Reset the branch to the parent branch
-    Reset,
+mod error;
+mod types;
 
-    // Skip merging the branch
-    Skip,
-
-    // Force a merge despite the squashed merge detection
-    Merge,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum ReportLevel {
-    // Minimal reporting (just success/failure)
-    Minimal,
-
-    // Standard reporting (summary with counts)
-    Standard,
-
-    // Detailed reporting (all actions and their results)
-    Detailed,
-}
-
-enum MergeResult {
-    // Successfully merged with changes
-    Success(String), // Contains the merge output message
-
-    // Already up-to-date, no changes needed
-    AlreadyUpToDate,
-
-    // Merge conflict occurred
-    Conflict(String), // Contains the conflict message
-}
-
-// For API consistency, we create our own Error variants
-trait ErrorExt {
-    #[allow(dead_code)]
-    fn from_str(message: &str) -> Self;
-    fn merge_conflict(branch: String, upstream: String, message: Option<String>) -> Self;
-    fn git_command_failed(command: String, status: i32, stdout: String, stderr: String) -> Self;
-}
-
-impl ErrorExt for Error {
-    fn from_str(message: &str) -> Self {
-        Error::from_str(message)
-    }
-
-    fn merge_conflict(branch: String, upstream: String, message: Option<String>) -> Self {
-        let mut error_msg = format!("Merge conflict between {} and {}", upstream, branch);
-        if let Some(details) = message {
-            error_msg.push('\n');
-            error_msg.push_str(&details);
-        }
-        Error::from_str(&error_msg)
-    }
-
-    fn git_command_failed(command: String, status: i32, stdout: String, stderr: String) -> Self {
-        let error_msg = format!(
-            "Git command failed: {}\nStatus: {}\nStdout: {}\nStderr: {}",
-            command, status, stdout, stderr
-        );
-        Error::from_str(&error_msg)
-    }
-}
-
-struct MergeOptions {
-    // Skip the merge of the root branch into the first branch
-    ignore_root: bool,
-
-    // Git merge options passed to all merge operations
-    merge_flags: Vec<String>,
-
-    // Whether to use fork point detection (more accurate but slower)
-    use_fork_point: bool,
-
-    // How to handle squashed merges (reset, skip, merge)
-    squashed_merge_handling: SquashedMergeHandling,
-
-    // Print verbose output
-    verbose: bool,
-
-    // Return to original branch after merging
-    return_to_original: bool,
-
-    // Use simple merge mode
-    simple_mode: bool,
-
-    // Level of detail in the final report
-    report_level: ReportLevel,
-}
-
-impl Default for MergeOptions {
-    fn default() -> Self {
-        MergeOptions {
-            ignore_root: false,
-            merge_flags: vec![],
-            use_fork_point: true,
-            squashed_merge_handling: SquashedMergeHandling::Reset,
-            verbose: false,
-            return_to_original: true,
-            simple_mode: false,
-            report_level: ReportLevel::Standard,
-        }
-    }
-}
+use error::ErrorExt;
+use types::*;
 
 fn executable_name() -> String {
     let name = std::env::current_exe()
@@ -199,18 +97,6 @@ fn print_rebase_error(executable_name: &str, branch: &str, upstream_branch: &str
         "⚠️  Resolve any rebase merge conflicts, and then run {} rebase",
         executable_name
     );
-}
-
-enum BranchSearchResult {
-    NotPartOfAnyChain,
-    Branch(Branch),
-}
-
-enum SortBranch {
-    First,
-    Last,
-    Before(Branch),
-    After(Branch),
 }
 
 #[derive(Clone, PartialEq)]
@@ -816,20 +702,6 @@ impl Chain {
 struct GitChain {
     executable_name: String,
     repo: Repository,
-}
-
-// Structure to hold merge commit information
-#[derive(Debug)]
-struct MergeCommitInfo {
-    message: Option<String>,
-    stats: Option<MergeStats>,
-}
-
-#[derive(Debug)]
-struct MergeStats {
-    files_changed: usize,
-    insertions: usize,
-    deletions: usize,
 }
 
 impl GitChain {
