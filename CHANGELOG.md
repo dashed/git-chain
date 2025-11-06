@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11] - 2025-11-05
+
+### Changed
+- Upgraded git2 dependency from 0.19.0 to 0.20.2
+- Updated libgit2-sys to 0.18.2+1.9.1
+
 ## [0.0.10] - 2025-11-05
 
 ### Fixed
@@ -30,5 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.9] - (Previous version)
 
-[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.9...HEAD
+[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.10...HEAD
+[0.0.11]: https://github.com/dashed/git-chain/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/dashed/git-chain/compare/v0.0.9...v0.0.10
