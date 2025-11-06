@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use git2::{BranchType, IndexAddOption, ObjectType, Oid, Repository};
+use git2::{BranchType, IndexAddOption, ObjectType, Oid, Repository, RepositoryInitOptions};
 
 pub fn generate_path_to_repo<S>(repo_name: S) -> PathBuf
 where
@@ -36,7 +36,9 @@ where
     fs::remove_dir_all(&path_to_repo).ok();
     fs::create_dir_all(&path_to_repo).unwrap();
 
-    let repo = match Repository::init(path_to_repo) {
+    let mut options = RepositoryInitOptions::new();
+    options.initial_head("master");
+    let repo = match Repository::init_opts(path_to_repo, &options) {
         Ok(repo) => repo,
         Err(err) => panic!("failed to init repo: {}", err),
     };
