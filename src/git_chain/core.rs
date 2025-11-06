@@ -1,7 +1,7 @@
 use std::process;
 
 use colored::*;
-use git2::{BranchType, Config, ConfigLevel, Error, ErrorCode, ObjectType, Repository};
+use git2::{BranchType, Config, ConfigLevel, Error, ErrorClass, ErrorCode, ObjectType, Repository};
 use regex::Regex;
 
 use super::GitChain;
@@ -12,7 +12,28 @@ impl GitChain {
     pub fn init() -> Result<Self, Error> {
         let name_of_current_executable = executable_name();
 
-        let repo = Repository::discover(".")?;
+        let repo = match Repository::discover(".") {
+            Ok(repo) => repo,
+            Err(ref e)
+                if e.class() == ErrorClass::Repository && e.code() == ErrorCode::NotFound =>
+            {
+                eprintln!(
+                    "{} Not a git repository (or any of the parent directories)",
+                    "error:".red().bold()
+                );
+                eprintln!(
+                    "\n{} This command must be run inside a git repository.",
+                    "hint:".yellow().bold()
+                );
+                eprintln!(
+                    "{} Run {} to create a new git repository.",
+                    "hint:".yellow().bold(),
+                    "git init".bold()
+                );
+                process::exit(1);
+            }
+            Err(e) => return Err(e),
+        };
 
         if repo.is_bare() {
             eprintln!(
