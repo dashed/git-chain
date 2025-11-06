@@ -3538,7 +3538,7 @@ Examples:
 
     let arg_matches = App::new("git-chain")
         .bin_name(executable_name())
-        .version("0.0.10")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Alberto Leal <mailforalberto@gmail.com>")
         .about("Tool for rebasing a chain of local git branches.")
         .subcommand(init_subcommand)
