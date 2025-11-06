@@ -1,9 +1,7 @@
 use std::ffi::OsString;
 use std::process;
-use std::process::Command;
 
 use colored::*;
-use git2::Error;
 
 mod branch;
 mod chain;
@@ -21,19 +19,8 @@ pub use branch::Branch;
 pub use chain::Chain;
 pub use git_chain::GitChain;
 
-pub fn executable_name() -> String {
-    let name = std::env::current_exe()
-        .expect("Cannot get the path of current executable.")
-        .file_name()
-        .expect("Cannot get the executable name.")
-        .to_string_lossy()
-        .into_owned();
-    if name.starts_with("git-") && name.len() > 4 {
-        let tmp: Vec<String> = name.split("git-").map(|x| x.to_string()).collect();
-        let git_cmd = &tmp[1];
-        return format!("git {}", git_cmd);
-    }
-    name
+fn main() {
+    run_app(std::env::args_os());
 }
 
 fn run_app<I, T>(arguments: I)
@@ -52,12 +39,23 @@ where
     }
 }
 
-fn main() {
-    run_app(std::env::args_os());
+pub fn executable_name() -> String {
+    let name = std::env::current_exe()
+        .expect("Cannot get the path of current executable.")
+        .file_name()
+        .expect("Cannot get the executable name.")
+        .to_string_lossy()
+        .into_owned();
+    if name.starts_with("git-") && name.len() > 4 {
+        let tmp: Vec<String> = name.split("git-").map(|x| x.to_string()).collect();
+        let git_cmd = &tmp[1];
+        return format!("git {}", git_cmd);
+    }
+    name
 }
 
-pub fn check_gh_cli_installed() -> Result<(), Error> {
-    let output = Command::new("gh").arg("--version").output();
+pub fn check_gh_cli_installed() -> Result<(), git2::Error> {
+    let output = std::process::Command::new("gh").arg("--version").output();
     match output {
         Ok(output) if output.status.success() => Ok(()),
         _ => {
