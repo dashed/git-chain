@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.13] - 2025-11-05
+
+### Improved
+- Enhanced error message when running git-chain outside a git repository
+  - Replaced technical git2 error with clear, actionable message
+  - Added helpful hints directing users to run 'git init'
+  - Styled error output consistently with colored formatting (error: in red, hint: in yellow)
+  - Mirrored Git's own error message style for better user familiarity
+
+### Added
+- Added integration test for non-git repository edge case
+
 ## [0.0.12] - 2025-11-05
 
 ### Fixed
@@ -41,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.9] - (Previous version)
 
-[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.11...HEAD
+[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.13...HEAD
+[0.0.13]: https://github.com/dashed/git-chain/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/dashed/git-chain/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/dashed/git-chain/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/dashed/git-chain/compare/v0.0.9...v0.0.10
