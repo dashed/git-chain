@@ -258,35 +258,41 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             };
         }
         ("rebase", Some(sub_matches)) => {
-            // Rebase all branches for the current chain.
-            let branch_name = git_chain.get_current_branch_name()?;
+            if sub_matches.is_present("continue_rebase") {
+                git_chain.rebase_continue()?;
+            } else if sub_matches.is_present("abort_rebase") {
+                git_chain.rebase_abort()?;
+            } else {
+                // Rebase all branches for the current chain.
+                let branch_name = git_chain.get_current_branch_name()?;
 
-            let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                BranchSearchResult::NotPartOfAnyChain => {
-                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
+                    BranchSearchResult::NotPartOfAnyChain => {
+                        git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                        process::exit(1);
+                    }
+                    BranchSearchResult::Branch(branch) => branch,
+                };
+
+                if Chain::chain_exists(&git_chain, &branch.chain_name)? {
+                    let step_rebase = sub_matches.is_present("step");
+                    let ignore_root = sub_matches.is_present("ignore_root");
+                    let squashed_merge_handling = match sub_matches.value_of("squashed_merge") {
+                        Some("skip") => SquashedRebaseHandling::Skip,
+                        Some("rebase") => SquashedRebaseHandling::Rebase,
+                        _ => SquashedRebaseHandling::Reset,
+                    };
+                    git_chain.rebase(
+                        &branch.chain_name,
+                        step_rebase,
+                        ignore_root,
+                        squashed_merge_handling,
+                    )?;
+                } else {
+                    eprintln!("Unable to rebase chain.");
+                    eprintln!("Chain does not exist: {}", branch.chain_name.bold());
                     process::exit(1);
                 }
-                BranchSearchResult::Branch(branch) => branch,
-            };
-
-            if Chain::chain_exists(&git_chain, &branch.chain_name)? {
-                let step_rebase = sub_matches.is_present("step");
-                let ignore_root = sub_matches.is_present("ignore_root");
-                let squashed_merge_handling = match sub_matches.value_of("squashed_merge") {
-                    Some("skip") => SquashedRebaseHandling::Skip,
-                    Some("rebase") => SquashedRebaseHandling::Rebase,
-                    _ => SquashedRebaseHandling::Reset,
-                };
-                git_chain.rebase(
-                    &branch.chain_name,
-                    step_rebase,
-                    ignore_root,
-                    squashed_merge_handling,
-                )?;
-            } else {
-                eprintln!("Unable to rebase chain.");
-                eprintln!("Chain does not exist: {}", branch.chain_name.bold());
-                process::exit(1);
             }
         }
         ("backup", Some(_sub_matches)) => {
