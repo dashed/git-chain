@@ -127,6 +127,20 @@ where
                 .possible_values(&["reset", "skip", "rebase"])
                 .default_value("reset")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("continue_rebase")
+                .long("continue")
+                .help("Continue the chain rebase after resolving conflicts")
+                .conflicts_with_all(&["step", "ignore_root", "squashed_merge", "abort_rebase"])
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("abort_rebase")
+                .long("abort")
+                .help("Abort the chain rebase and restore all branches to their original state")
+                .conflicts_with_all(&["step", "ignore_root", "squashed_merge", "continue_rebase"])
+                .takes_value(false),
         );
 
     let push_subcommand = SubCommand::with_name("push")
