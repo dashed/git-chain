@@ -130,6 +130,8 @@ impl GitChain {
         let mut num_of_rebase_operations = 0;
         let mut num_of_branches_visited = 0;
 
+        let total_branches = chain.branches.len();
+
         for (index, branch) in chain.branches.iter().enumerate() {
             if step_rebase && num_of_rebase_operations == 1 {
                 // performed at most one rebase.
@@ -143,6 +145,18 @@ impl GitChain {
             } else {
                 &chain.branches[index - 1].branch_name
             };
+
+            // Progress reporting
+            if !step_rebase {
+                println!();
+                println!(
+                    "📌 [{}/{}] Rebasing {} onto {}...",
+                    index + 1,
+                    total_branches,
+                    branch.branch_name.bold(),
+                    prev_branch_name.bold()
+                );
+            }
 
             if index == 0 && ignore_root {
                 // Skip the rebase operation for the first branch of the chain.
@@ -535,6 +549,16 @@ impl GitChain {
             let parent_name = state.branches[i].parent.clone();
             let common_point = state.merge_bases[i].clone();
 
+            // Progress reporting
+            println!();
+            println!(
+                "📌 [{}/{}] Rebasing {} onto {}...",
+                i + 1,
+                state.total_count,
+                branch_name.bold(),
+                parent_name.bold()
+            );
+
             self.checkout_branch(&branch_name)?;
 
             let before_sha1 = self.get_commit_hash_of_head()?;
@@ -543,7 +567,6 @@ impl GitChain {
             if self.is_squashed_merged(&common_point, &parent_name, &branch_name)? {
                 match squashed_merge_handling {
                     SquashedRebaseHandling::Skip => {
-                        println!();
                         println!(
                             "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
                             branch_name.bold(),
@@ -553,7 +576,6 @@ impl GitChain {
                         continue;
                     }
                     SquashedRebaseHandling::Rebase => {
-                        println!();
                         println!(
                             "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
                             branch_name.bold(),
@@ -562,7 +584,6 @@ impl GitChain {
                         // Fall through to normal rebase
                     }
                     SquashedRebaseHandling::Reset => {
-                        println!();
                         println!(
                             "⚠️  Branch {} is detected to be squashed and merged onto {}.",
                             branch_name.bold(),
@@ -613,7 +634,6 @@ impl GitChain {
                 .output()
                 .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
 
-            println!();
             println!("{}", command);
 
             match self.repo.state() {
@@ -843,6 +863,16 @@ impl GitChain {
             let parent_name = state.branches[i].parent.clone();
             let common_point = state.merge_bases[i].clone();
 
+            // Progress reporting
+            println!();
+            println!(
+                "📌 [{}/{}] Rebasing {} onto {}...",
+                i + 1,
+                state.total_count,
+                branch_name.bold(),
+                parent_name.bold()
+            );
+
             self.checkout_branch(&branch_name)?;
 
             let before_sha1 = self.get_commit_hash_of_head()?;
@@ -851,7 +881,6 @@ impl GitChain {
             if self.is_squashed_merged(&common_point, &parent_name, &branch_name)? {
                 match squashed_merge_handling {
                     SquashedRebaseHandling::Skip => {
-                        println!();
                         println!(
                             "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
                             branch_name.bold(),
@@ -861,7 +890,6 @@ impl GitChain {
                         continue;
                     }
                     SquashedRebaseHandling::Rebase => {
-                        println!();
                         println!(
                             "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
                             branch_name.bold(),
@@ -870,7 +898,6 @@ impl GitChain {
                         // Fall through to normal rebase
                     }
                     SquashedRebaseHandling::Reset => {
-                        println!();
                         println!(
                             "⚠️  Branch {} is detected to be squashed and merged onto {}.",
                             branch_name.bold(),
@@ -921,7 +948,6 @@ impl GitChain {
                 .output()
                 .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
 
-            println!();
             println!("{}", command);
 
             match self.repo.state() {
