@@ -6,8 +6,8 @@ pub mod common;
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
     generate_path_to_bare_repo, generate_path_to_repo, get_current_branch_name, run_git_command,
-    run_test_bin_expect_ok, setup_git_bare_repo, setup_git_repo, teardown_git_bare_repo,
-    teardown_git_repo,
+    run_test_bin_expect_err, run_test_bin_expect_ok, setup_git_bare_repo, setup_git_repo,
+    teardown_git_bare_repo, teardown_git_repo,
 };
 
 #[test]
@@ -252,4 +252,55 @@ Pushed 2 branches.
 
     teardown_git_repo(repo_name);
     teardown_git_bare_repo(repo_name);
+}
+
+#[test]
+fn push_nonexistent_chain() {
+    let repo_name = "push_nonexistent_chain";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create a branch and init a chain
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+    };
+
+    let args: Vec<&str> = vec!["init", "real_chain", "master"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Switch to master (not part of any chain) and try to push — should return error
+    checkout_branch(&repo, "master");
+
+    let args: Vec<&str> = vec!["push"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+
+    // Diagnostic printing
+    println!("STDERR: {}", stderr);
+    println!("EXIT CODE: {}", output.status.code().unwrap_or(-1));
+
+    assert!(
+        stderr.contains("not part of any chain"),
+        "stderr should indicate branch is not part of any chain, got: {}",
+        stderr
+    );
+
+    teardown_git_repo(repo_name);
 }

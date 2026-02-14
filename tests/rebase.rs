@@ -1240,3 +1240,197 @@ chain_name
 
     teardown_git_repo(repo_name);
 }
+
+#[test]
+fn rebase_nonexistent_chain() {
+    let repo_name = "rebase_nonexistent_chain";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create a branch but don't set up any chain
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+    };
+
+    // Try to rebase without any chain set up — should return error, not crash
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+
+    // Diagnostic printing
+    println!("STDERR: {}", stderr);
+    println!("EXIT CODE: {}", output.status.code().unwrap_or(-1));
+
+    assert!(
+        stderr.contains("not part of any chain"),
+        "stderr should indicate branch is not part of any chain, got: {}",
+        stderr
+    );
+
+    // Ensure we're still on the same branch (no orphaned state)
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_dirty_working_directory() {
+    let repo_name = "rebase_dirty_working_directory";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create and checkout new branch
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+    };
+
+    // set up the chain
+    let args: Vec<&str> = vec!["init", "chain_name", "master"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Modify a tracked file to create uncommitted changes (dirty working directory)
+    create_new_file(&path_to_repo, "file_1.txt", "modified content");
+
+    // Try to rebase with dirty working directory — should return error, not crash
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+
+    // Diagnostic printing
+    println!("STDERR: {}", stderr);
+    println!("EXIT CODE: {}", output.status.code().unwrap_or(-1));
+
+    assert!(
+        stderr.contains("uncommitted changes"),
+        "stderr should mention uncommitted changes, got: {}",
+        stderr
+    );
+
+    // Ensure we're still on the same branch
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_missing_branch_in_chain() {
+    let repo_name = "rebase_missing_branch_in_chain";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create branches
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+    };
+
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "message");
+    };
+
+    // set up chain with both branches
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Go back to some_branch_1 and delete some_branch_2's ref without removing config.
+    // Using `git update-ref -d` to preserve the chain config entries (chain-name, chain-order, root-branch)
+    // while removing the actual branch. This simulates a branch being deleted externally.
+    checkout_branch(&repo, "some_branch_1");
+    let output = run_git_command(
+        &path_to_repo,
+        vec!["update-ref", "-d", "refs/heads/some_branch_2"],
+    );
+    assert!(
+        output.status.success(),
+        "Failed to delete some_branch_2 ref: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Try to rebase with a missing branch — should return error, not crash
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+
+    // Diagnostic printing
+    println!("STDERR: {}", stderr);
+    println!("EXIT CODE: {}", output.status.code().unwrap_or(-1));
+
+    assert!(
+        stderr.contains("some_branch_2"),
+        "stderr should mention the missing branch name, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("not correctly set up") || stderr.contains("does not exist"),
+        "stderr should indicate branch issue, got: {}",
+        stderr
+    );
+
+    // Ensure we're still on the same branch
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    teardown_git_repo(repo_name);
+}
