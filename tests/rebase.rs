@@ -207,15 +207,21 @@ chain_name
         .trim_start()
     );
 
-    // git chain rebase
+    // git chain rebase (second time — should be up-to-date)
     let args: Vec<&str> = vec!["rebase"];
     let output = run_test_bin_expect_ok(&path_to_repo, args);
 
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Switching back to branch: some_branch_0")
+        stdout.contains("Switching back to branch: some_branch_0"),
+        "should contain switch message, got: {}",
+        stdout
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Chain chain_name is already up-to-date.")
+        stdout.contains("Chain chain_name is already up-to-date."),
+        "should contain up-to-date message, got: {}",
+        stdout
     );
 
     teardown_git_repo(repo_name);
@@ -2575,6 +2581,433 @@ fn rebase_continue_with_deleted_branch() {
 
     // Verify we're back on the original branch
     assert_eq!(&get_current_branch_name(&repo), "branch_1");
+
+    teardown_git_repo(repo_name);
+}
+
+// ============================================================
+// Phase 3: Polish and UX tests
+// ============================================================
+
+#[test]
+fn rebase_progress_reporting() {
+    let repo_name = "rebase_progress_reporting";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Add a commit to master to force rebase
+    {
+        create_new_file(&path_to_repo, "master_file.txt", "master content");
+        commit_all(&repo, "master commit");
+    };
+
+    // Create branch_1
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2
+    {
+        create_branch(&repo, "branch_2");
+        checkout_branch(&repo, "branch_2");
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Create branch_3
+    {
+        create_branch(&repo, "branch_3");
+        checkout_branch(&repo, "branch_3");
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+        commit_all(&repo, "branch 3 commit");
+    };
+
+    // Set up chain
+    checkout_branch(&repo, "branch_1");
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "branch_1",
+        "branch_2",
+        "branch_3",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Add a new commit to master to force actual rebasing
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_new.txt", "new master content");
+    commit_all(&repo, "new master commit");
+    checkout_branch(&repo, "branch_1");
+
+    // Run rebase
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("STDOUT: {}", stdout);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify progress reporting
+    assert!(
+        stdout.contains("[1/3]"),
+        "should show progress for branch 1 of 3, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("[2/3]"),
+        "should show progress for branch 2 of 3, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("[3/3]"),
+        "should show progress for branch 3 of 3, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Rebasing branch_1 onto master"),
+        "should show which branches are being rebased, got: {}",
+        stdout
+    );
+
+    // Verify summary report
+    assert!(
+        stdout.contains("Rebase Summary for Chain: chain_name"),
+        "should show summary report header, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Rebased:"),
+        "should show rebased count, got: {}",
+        stdout
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_status_no_state() {
+    let repo_name = "rebase_status_no_state";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Create branch and chain
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    let args: Vec<&str> = vec!["init", "chain_name", "master"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Run rebase --status when no rebase is in progress
+    let args: Vec<&str> = vec!["rebase", "--status"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("STDOUT: {}", stdout);
+
+    assert!(
+        stdout.contains("No chain rebase in progress"),
+        "should indicate no rebase in progress, got: {}",
+        stdout
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_status_during_conflict() {
+    let repo_name = "rebase_status_during_conflict";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Create branch_1
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2
+    {
+        create_branch(&repo, "branch_2");
+        checkout_branch(&repo, "branch_2");
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Set up chain
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "branch_1", "branch_2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Create conflict: add same file on master with different content
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "master conflict commit");
+    checkout_branch(&repo, "branch_1");
+
+    // Run rebase — should fail on branch_1 with conflict
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        stderr.contains("Unable to completely rebase branch_1"),
+        "should report conflict, got: {}",
+        stderr
+    );
+
+    // Run rebase --status during conflict
+    let args: Vec<&str> = vec!["rebase", "--status"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("STATUS STDOUT: {}", stdout);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify status output
+    assert!(
+        stdout.contains("Chain Rebase Status: chain_name"),
+        "should show chain name in status, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Root: master"),
+        "should show root branch, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Conflict"),
+        "should show conflict status for branch_1, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Pending"),
+        "should show pending status for branch_2, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Progress:"),
+        "should show progress, got: {}",
+        stdout
+    );
+
+    // Clean up by aborting
+    // First abort the git rebase
+    run_git_command(&path_to_repo, vec!["rebase", "--abort"]);
+    let args: Vec<&str> = vec!["rebase", "--abort"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_cleanup_backups() {
+    let repo_name = "rebase_cleanup_backups";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Create branch_1
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Set up chain
+    let args: Vec<&str> = vec!["init", "chain_name", "master"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // First, create backup branches via the backup command
+    let args: Vec<&str> = vec!["backup"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Verify backup exists
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch should exist after backup command"
+    );
+
+    // Run rebase with --cleanup-backups
+    let args: Vec<&str> = vec!["rebase", "--cleanup-backups"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("STDOUT: {}", stdout);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify cleanup message
+    assert!(
+        stdout.contains("Cleaning up backup branches"),
+        "should show cleanup message, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("backup-chain_name/branch_1"),
+        "should mention the deleted backup branch, got: {}",
+        stdout
+    );
+
+    // Verify backup branch was deleted
+    // Need to refresh the repo to see the updated state
+    let repo = git2::Repository::open(&path_to_repo).unwrap();
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch should be deleted after cleanup"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_no_cleanup_without_flag() {
+    let repo_name = "rebase_no_cleanup_without_flag";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Create branch_1
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Set up chain
+    let args: Vec<&str> = vec!["init", "chain_name", "master"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Create backup branches
+    let args: Vec<&str> = vec!["backup"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Verify backup exists
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch should exist"
+    );
+
+    // Run rebase WITHOUT --cleanup-backups
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Should NOT cleanup
+    assert!(
+        !stdout.contains("Cleaning up backup branches"),
+        "should NOT show cleanup message without flag, got: {}",
+        stdout
+    );
+
+    // Verify backup branch still exists
+    let repo = git2::Repository::open(&path_to_repo).unwrap();
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch should still exist without --cleanup-backups"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_summary_report_with_skipped_branches() {
+    let repo_name = "rebase_summary_report_skipped";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Create branch_1
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2
+    {
+        create_branch(&repo, "branch_2");
+        checkout_branch(&repo, "branch_2");
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Set up chain with ignore-root (branch_1 will be skipped)
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "branch_1", "branch_2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Add commit to master so branches need rebasing
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_new.txt", "new master content");
+    commit_all(&repo, "new master commit");
+    checkout_branch(&repo, "branch_1");
+
+    // Run rebase with --ignore-root (first branch skipped)
+    let args: Vec<&str> = vec!["rebase", "--ignore-root"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("STDOUT: {}", stdout);
+
+    // Verify summary shows both rebased and skipped
+    assert!(
+        stdout.contains("Rebase Summary for Chain: chain_name"),
+        "should show summary header, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Skipped:"),
+        "should show skipped count in summary (ignore-root skips first branch), got: {}",
+        stdout
+    );
 
     teardown_git_repo(repo_name);
 }
