@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
 // Merge options types
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SquashedMergeHandling {
@@ -111,4 +114,46 @@ pub struct MergeStats {
     pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,
+}
+
+// Chain rebase state tracking types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainRebaseState {
+    pub version: u32,
+    pub chain_name: String,
+    pub original_branch: String,
+    pub root_branch: String,
+    pub options: RebaseStateOptions,
+    pub original_refs: HashMap<String, String>,
+    pub merge_bases: Vec<String>,
+    pub branches: Vec<BranchState>,
+    pub current_index: usize,
+    pub completed_count: usize,
+    pub total_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RebaseStateOptions {
+    pub step_rebase: bool,
+    pub ignore_root: bool,
+    pub squashed_merge_handling: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BranchState {
+    pub name: String,
+    pub parent: String,
+    pub status: BranchRebaseStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchRebaseStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Skipped,
+    SquashReset,
+    Conflict,
+    Failed,
 }
