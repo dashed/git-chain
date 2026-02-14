@@ -211,6 +211,7 @@ dependencies = [
  "git2",
  "rand",
  "regex",
+ "serde",
  "serde_json",
 ]
 
