@@ -1,13 +1,21 @@
 # Git-Chain Development Guidelines
 
 ## Build, Test, Lint Commands
-- Build: `cargo build --release`
-- Run all tests: `cargo test`
-- Run a specific test: `cargo test test_name`
-- Run tests in a specific file: `cargo test --test backup`
-- Check for errors without running tests: `cargo check`
-- Format code: `cargo fmt`
-- Check for linting issues: `cargo clippy`
+
+Use the Makefile for all development tasks. Run `make help` to see all available targets.
+
+- Build: `make build` (or `make release` for release mode)
+- Run all tests: `make test` (or `make test-sequential` for single-threaded)
+- Run a specific test: `make test-specific TEST=test_name`
+- Run tests in a specific file: `make test-file FILE=backup`
+- Check for errors without building: `make check`
+- Format code: `make fmt`
+- Check formatting: `make fmt-check`
+- Lint (format check + strict clippy): `make lint`
+- Run clippy: `make clippy` (or `make clippy-strict` for CI-level strictness)
+- Full CI pipeline locally: `make ci-local`
+- Quick dev check (format + check): `make quick`
+- Clean build artifacts: `make clean`
 
 ## Code Style Guidelines
 - **Formatting**: Follow standard Rust style with 4-space indentation

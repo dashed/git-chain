@@ -1,7 +1,15 @@
 # Git-Chain - Tool for Managing Git Branch Chains
 # Development Makefile
 
-.PHONY: help test test-sequential test-pr check clippy fmt fmt-check clean doc doc-open build release install-deps ci-local all
+.PHONY: help build release install \
+	test test-sequential test-pr test-merge test-rebase test-specific test-file \
+	check clippy clippy-strict clippy-fix fmt fmt-check lint \
+	doc doc-open clean install-deps \
+	ci-local all quick dev \
+	chain-init chain-list chain-status \
+	debug-info watch \
+	pre-release bump-version tag-version create-release \
+	test-coverage
 
 # Default target
 .DEFAULT_GOAL := help
@@ -29,7 +37,7 @@ help: ## Show this help message
 	@echo "$(BOLD)Examples:$(RESET)"
 	@echo "  make build         # Build the project"
 	@echo "  make test          # Run all tests"
-	@echo "  make check         # Quick compilation check"
+	@echo "  make lint          # Format check + strict clippy"
 	@echo "  make ci-local      # Run full CI pipeline locally"
 
 # === Building ===
@@ -73,6 +81,10 @@ test-specific: ## Run a specific test (use TEST=test_name)
 	@echo "$(BOLD)$(GREEN)Running test: $(TEST)$(RESET)"
 	@cargo test $(TEST) -- --nocapture
 
+test-file: ## Run all tests in a file (use FILE=backup)
+	@echo "$(BOLD)$(GREEN)Running tests in file: $(FILE)$(RESET)"
+	@cargo test --test $(FILE)
+
 # === Development ===
 
 check: ## Quick compilation check
@@ -98,6 +110,12 @@ fmt: ## Format code
 fmt-check: ## Check code formatting without changing files
 	@echo "$(BOLD)$(MAGENTA)Checking code formatting...$(RESET)"
 	@cargo fmt -- --check
+
+lint: ## Run formatting check and strict clippy
+	@echo "$(BOLD)$(YELLOW)Running lint checks...$(RESET)"
+	@$(MAKE) fmt-check
+	@$(MAKE) clippy-strict
+	@echo "$(BOLD)$(GREEN)✓ Lint checks passed!$(RESET)"
 
 # === Documentation ===
 
@@ -259,18 +277,3 @@ test-coverage: ## Generate test coverage report (requires cargo-tarpaulin)
 	@cargo tarpaulin --out Html
 	@echo "$(BOLD)$(GREEN)✓ Coverage report generated in tarpaulin-report.html$(RESET)"
 
-test-bench: ## Run benchmarks
-	@echo "$(BOLD)$(CYAN)Running benchmarks...$(RESET)"
-	@cargo bench
-
-# === PR Testing ===
-
-test-pr-fix: ## Test the PR draft fix
-	@echo "$(BOLD)$(CYAN)Testing PR draft functionality fix...$(RESET)"
-	@cargo test test_pr_command_with_draft_flag -- --nocapture
-
-# === Integration Testing ===
-
-integration-test: ## Run integration test in a temporary git repo
-	@echo "$(BOLD)$(CYAN)Running integration test...$(RESET)"
-	@./scripts/integration_test.sh || echo "$(YELLOW)Integration test script not found$(RESET)"
