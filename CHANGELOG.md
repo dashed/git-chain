@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Replaced `process::exit(1)` with proper error propagation in core operations
+  - `rebase`, `backup`, `push`, `prune`, and `pr` operations now return `Result<(), Error>` instead of calling `process::exit(1)`
+  - Errors propagate to the top-level handler in `main.rs` for consistent formatting
+  - `check_gh_cli_installed()` returns `Result` instead of exiting directly
+- Updated CLAUDE.md to reference Makefile targets instead of raw cargo commands
+
+### Added
+- Added `lint` Makefile target (combines `fmt-check` + `clippy-strict`)
+- Added `test-file` Makefile target for running all tests in a specific file
+- Added integration tests for error propagation:
+  - `rebase_nonexistent_chain`, `rebase_dirty_working_directory`, `rebase_missing_branch_in_chain`
+  - `backup_nonexistent_chain`, `push_nonexistent_chain`, `prune_nonexistent_chain`
+
+### Fixed
+- Updated `.PHONY` declaration in Makefile to include all targets
+
+### Removed
+- Removed dead Makefile targets: `test-bench`, `test-pr-fix`, `integration-test`
+
 ## [0.0.13] - 2025-11-05
 
 ### Improved

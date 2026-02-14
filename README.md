@@ -465,7 +465,7 @@ error: Merge conflict between feature/auth and feature/profiles
 1. Install Rust and Cargo: https://rustup.rs
 2. Get the Git Chain code:
    ```
-   git clone https://github.com/evansst/git-chain.git
+   git clone https://github.com/dashed/git-chain.git
    cd git-chain
    ```
 3. Install the tool:
@@ -481,6 +481,25 @@ git chain <command>
 Alternatively, you can create a Git alias:
 ```
 git config --global alias.chain "!/path/to/target/release/git-chain"
+```
+
+## Development
+
+This project uses a Makefile for all development tasks. Run `make help` to see every available target.
+
+```bash
+make build                        # Build in debug mode
+make release                      # Build in release mode
+make test                         # Run all tests
+make test-sequential              # Run tests single-threaded
+make test-specific TEST=test_name # Run a specific test with output
+make test-file FILE=backup        # Run all tests in a file
+make lint                         # Format check + strict clippy
+make fmt                          # Auto-format code
+make clippy                       # Run clippy lints
+make ci-local                     # Run the full CI pipeline locally
+make clean                        # Clean build artifacts
+make debug-info                   # Show toolchain and environment info
 ```
 
 ## Getting Started: A Simple Example
