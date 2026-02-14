@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated CLAUDE.md to reference Makefile targets instead of raw cargo commands
 
 ### Added
+- Added `--squashed-merge` flag to `rebase` command with three modes:
+  - `reset` (default): auto-creates a backup branch before destructive `git reset --hard`
+  - `skip`: skips squash-merged branches entirely during rebase
+  - `rebase`: forces normal rebase despite squash-merge detection
+- Added `SquashedRebaseHandling` enum in `types.rs` for rebase-specific squash handling
+- Added integration tests for squash-merge handling in rebase:
+  - `rebase_squashed_merge_skip`, `rebase_squashed_merge_force_rebase`
 - Added `lint` Makefile target (combines `fmt-check` + `clippy-strict`)
 - Added `test-file` Makefile target for running all tests in a specific file
 - Added integration tests for error propagation:
@@ -22,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `backup_nonexistent_chain`, `push_nonexistent_chain`, `prune_nonexistent_chain`
 
 ### Fixed
+- Squash-merge reset in `rebase` now auto-creates a backup branch before destructive `git reset --hard`
 - Updated `.PHONY` declaration in Makefile to include all targets
 
 ### Removed

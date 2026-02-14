@@ -74,7 +74,7 @@ When you run `git chain rebase`, git-chain intelligently updates each branch in 
    >
    > When Git's fork-point detection fails, git-chain automatically falls back to using `git merge-base`, which finds the most recent common ancestor between two branches. While this ensures rebasing can proceed, it might be less precise than using the true fork-point.
 
-4. **Handling Squash Merges**: If you've squash-merged a branch into its parent (combining all commits into one), git-chain detects this and prevents duplicate changes.
+4. **Handling Squash Merges**: If you've squash-merged a branch into its parent (combining all commits into one), git-chain detects this and automatically creates a backup branch before resetting the branch to its parent. You can control this behavior with the `--squashed-merge` flag (see Command Options below).
 
 5. **The Actual Rebasing**: For each branch, git-chain runs a command similar to:
    ```
@@ -100,6 +100,17 @@ Git Chain's rebase command offers customization through its flags:
   ```
   Useful when you want to update relationships between chain branches without incorporating root branch changes.
 
+- **`--squashed-merge=<mode>`**: How to handle branches detected as squash-merged
+  ```
+  git chain rebase --squashed-merge=reset   # Default: auto-backup + reset to parent
+  git chain rebase --squashed-merge=skip    # Skip the squash-merged branch
+  git chain rebase --squashed-merge=rebase  # Force normal rebase despite detection
+  ```
+  When git-chain detects that a branch has been squash-merged into its parent:
+  - **`reset`** (default): Creates a backup branch (`backup-<chain>/<branch>`) before resetting the branch to match its parent with `git reset --hard`. This is the safest option — your original commits are preserved in the backup branch.
+  - **`skip`**: Leaves the branch untouched and continues with the next branch in the chain.
+  - **`rebase`**: Ignores the squash-merge detection and performs a normal rebase. This may cause conflicts if the branch has multiple commits.
+
 ### Examples (`git chain rebase`)
 
 Here are some common scenarios and how to handle them with git-chain rebase:
@@ -124,7 +135,17 @@ git chain rebase --ignore-root
 ```
 This skips rebasing the first branch onto the root branch.
 
-#### 3. Careful rebasing with potential conflicts
+#### 3. Handling squash-merged branches
+
+**Scenario**: A branch in your chain was squash-merged into its parent, and you want to skip it during rebase.
+
+**Solution**:
+```
+git chain rebase --squashed-merge=skip
+```
+This skips any branches detected as squash-merged, leaving them untouched while rebasing the rest of the chain.
+
+#### 4. Careful rebasing with potential conflicts
 
 **Scenario**: You anticipate conflicts and want to handle each branch separately.
 
@@ -190,10 +211,10 @@ Rebasing branch feature/profiles onto feature/auth...
 
 If a rebase goes wrong, Git Chain provides several recovery options:
 
-1. **Backup Branches**: If you used `--backup`, you can restore using:
+1. **Backup Branches**: Backup branches are automatically created when squash-merged branches are reset (via `--squashed-merge=reset`). You can also create backups manually with `git chain backup`. To restore:
    ```
    git checkout branch-name
-   git reset --hard branch-name-backup
+   git reset --hard backup-chain-name/branch-name
    ```
 
 2. **Reflog**: Even without backups, you can recover using Git's reflog:
@@ -586,6 +607,11 @@ git chain rebase --step
 
 # Skip rebasing the first branch onto the root branch
 git chain rebase --ignore-root
+
+# Specify how to handle squash-merged branches during rebase
+git chain rebase --squashed-merge=reset   # Auto-backup + reset (default)
+git chain rebase --squashed-merge=skip    # Skip squash-merged branches
+git chain rebase --squashed-merge=rebase  # Force normal rebase
 
 # Merge all branches in the current chain (preserves history)
 git chain merge
