@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Rebase conflict error message now shows numbered recovery steps with `--continue` and `--abort` instructions
 - Replaced `process::exit(1)` with proper error propagation in core operations
   - `rebase`, `backup`, `push`, `prune`, and `pr` operations now return `Result<(), Error>` instead of calling `process::exit(1)`
   - Errors propagate to the top-level handler in `main.rs` for consistent formatting
@@ -15,6 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated CLAUDE.md to reference Makefile targets instead of raw cargo commands
 
 ### Added
+- Added `--continue` flag to `rebase` command for resuming a chain rebase after resolving conflicts
+  - Loads saved state from `.git/chain-rebase-state.json`
+  - Marks the conflicted branch as completed and resumes from the next pending branch
+  - Uses pre-computed merge bases for correct rebasing after partial chain rebase
+- Added `--abort` flag to `rebase` command for rolling back a chain rebase
+  - Aborts any in-progress git rebase
+  - Restores all branches to their original positions using saved refs
+  - Returns to the original branch and cleans up state file
+- Added chain rebase state tracking via `.git/chain-rebase-state.json`
+  - Persists original branch refs, merge bases, and per-branch rebase status
+  - Enables recovery from conflicts without re-computing merge bases
+  - Blocks new rebase when prior state exists (directs user to --continue or --abort)
+  - Skipped for `--step` mode which re-runs from scratch each time
+- Added `ChainRebaseState`, `BranchState`, and `BranchRebaseStatus` types for state serialization
+- Added `rebase_state` module for state file I/O (read, write, check, delete)
+- Added `get_branch_commit_oid()` helper for capturing branch refs before rebase
+- Added integration tests for rebase state tracking:
+  - `rebase_continue_with_remaining_branches`, `rebase_abort_after_conflict`
+  - `rebase_continue_no_state`, `rebase_abort_no_state`, `rebase_blocked_when_state_exists`
+- Added `serde` dependency for JSON serialization of rebase state
 - Added `--squashed-merge` flag to `rebase` command with three modes:
   - `reset` (default): auto-creates a backup branch before destructive `git reset --hard`
   - `skip`: skips squash-merged branches entirely during rebase
