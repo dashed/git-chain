@@ -9,6 +9,7 @@ mod cli;
 mod commands;
 mod error;
 mod git_chain;
+mod rebase_state;
 mod types;
 
 use cli::parse_arg_matches;
