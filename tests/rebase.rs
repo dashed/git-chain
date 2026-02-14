@@ -1693,3 +1693,387 @@ fn rebase_squashed_merge_force_rebase() {
 
     teardown_git_repo(repo_name);
 }
+
+#[test]
+fn rebase_continue_with_remaining_branches() {
+    let repo_name = "rebase_continue_with_remaining_branches";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create branch_1
+    {
+        let branch_name = "branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2
+    {
+        let branch_name = "branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Create branch_3
+    {
+        let branch_name = "branch_3";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+        commit_all(&repo, "branch 3 commit");
+    };
+
+    // Set up chain
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "branch_1",
+        "branch_2",
+        "branch_3",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Create conflict: branch_1 modifies file_2.txt (which branch_2 also has)
+    {
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_2.txt", "conflict from branch 1");
+        commit_all(&repo, "add conflict");
+    };
+
+    // Record original branch_3 position
+    let branch_3_oid_before = repo.revparse_single("branch_3").unwrap().id().to_string();
+
+    // Run git chain rebase — should fail on branch_2
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        stderr.contains("Unable to completely rebase branch_2 to branch_1"),
+        "stderr should contain rebase failure message, got: {}",
+        stderr
+    );
+
+    // Verify state file exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // Verify branch_3 was NOT rebased yet (still at original position)
+    let branch_3_oid_during = repo.revparse_single("branch_3").unwrap().id().to_string();
+    assert_eq!(
+        branch_3_oid_before, branch_3_oid_during,
+        "branch_3 should not have been rebased yet"
+    );
+
+    // Resolve conflict and complete git-level rebase
+    commit_all(&repo, "resolve conflict");
+    run_git_command(&path_to_repo, vec!["rebase", "--continue"]);
+
+    assert_eq!(repo.state(), RepositoryState::Clean);
+
+    // Run git chain rebase --continue — should rebase branch_3
+    let args: Vec<&str> = vec!["rebase", "--continue"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("CONTINUE STDOUT: {}", stdout);
+
+    assert!(
+        stdout.contains("Continuing chain rebase"),
+        "should show continue message, got: {}",
+        stdout
+    );
+
+    // Verify branch_3 was rebased (position changed)
+    let branch_3_oid_after = repo.revparse_single("branch_3").unwrap().id().to_string();
+    assert_ne!(
+        branch_3_oid_before, branch_3_oid_after,
+        "branch_3 should have been rebased during --continue"
+    );
+
+    // Verify state file was cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful continue"
+    );
+
+    // Verify we're back on the original branch (branch_1)
+    assert_eq!(&get_current_branch_name(&repo), "branch_1");
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_abort_after_conflict() {
+    let repo_name = "rebase_abort_after_conflict";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create branch_1
+    {
+        let branch_name = "branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2
+    {
+        let branch_name = "branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Set up chain
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "branch_1", "branch_2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Create conflict: branch_1 modifies file_2.txt (which branch_2 also has)
+    {
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_2.txt", "conflict from branch 1");
+        commit_all(&repo, "add conflict");
+    };
+
+    // Record original branch positions
+    let branch_2_oid_before = repo.revparse_single("branch_2").unwrap().id().to_string();
+
+    // Run git chain rebase — should fail on branch_2
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    assert!(
+        stderr.contains("Unable to completely rebase branch_2 to branch_1"),
+        "stderr should contain rebase failure message, got: {}",
+        stderr
+    );
+
+    // Verify state file exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // Run git chain rebase --abort (while git rebase is still in progress)
+    let args: Vec<&str> = vec!["rebase", "--abort"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("ABORT STDOUT: {}", stdout);
+
+    assert!(
+        stdout.contains("Aborted chain rebase"),
+        "should show abort message, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("All branches restored"),
+        "should show restoration message, got: {}",
+        stdout
+    );
+
+    // Verify state file was cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after abort"
+    );
+
+    // Verify repo is in clean state
+    assert_eq!(repo.state(), RepositoryState::Clean);
+
+    // Verify we're back on the original branch
+    assert_eq!(&get_current_branch_name(&repo), "branch_1");
+
+    // Verify branch_2 is restored to its original position
+    let branch_2_oid_after = repo.revparse_single("branch_2").unwrap().id().to_string();
+    assert_eq!(
+        branch_2_oid_before, branch_2_oid_after,
+        "branch_2 should be restored to its original position after abort"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_continue_no_state() {
+    let repo_name = "rebase_continue_no_state";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Suppress unused variable warning
+    let _ = &repo;
+
+    // Try --continue with no state file — should fail
+    let args: Vec<&str> = vec!["rebase", "--continue"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        stderr.contains("No chain rebase in progress"),
+        "stderr should indicate no rebase in progress, got: {}",
+        stderr
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_abort_no_state() {
+    let repo_name = "rebase_abort_no_state";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // Suppress unused variable warning
+    let _ = &repo;
+
+    // Try --abort with no state file — should fail
+    let args: Vec<&str> = vec!["rebase", "--abort"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        stderr.contains("No chain rebase in progress"),
+        "stderr should indicate no rebase in progress, got: {}",
+        stderr
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_blocked_when_state_exists() {
+    let repo_name = "rebase_blocked_when_state_exists";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create branch_1
+    {
+        let branch_name = "branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2
+    {
+        let branch_name = "branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Set up chain
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "branch_1", "branch_2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Create conflict
+    {
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_2.txt", "conflict from branch 1");
+        commit_all(&repo, "add conflict");
+    };
+
+    // Run git chain rebase — should fail on branch_2
+    let args: Vec<&str> = vec!["rebase"];
+    run_test_bin_expect_err(&path_to_repo, args);
+
+    // Resolve git rebase conflict
+    commit_all(&repo, "resolve conflict");
+    run_git_command(&path_to_repo, vec!["rebase", "--continue"]);
+
+    // Verify state file still exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(state_file.exists(), "chain rebase state file should exist");
+
+    // Try to run git chain rebase again — should fail because state exists
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        stderr.contains("chain rebase is already in progress"),
+        "stderr should indicate existing rebase state, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("--continue") && stderr.contains("--abort"),
+        "stderr should suggest --continue and --abort, got: {}",
+        stderr
+    );
+
+    // Clean up by running --continue
+    let args: Vec<&str> = vec!["rebase", "--continue"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Verify state file is now cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up"
+    );
+
+    teardown_git_repo(repo_name);
+}
