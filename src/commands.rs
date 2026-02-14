@@ -258,12 +258,14 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             };
         }
         ("rebase", Some(sub_matches)) => {
+            let cleanup_backups = sub_matches.is_present("cleanup_backups");
+
             if sub_matches.is_present("status_rebase") {
                 git_chain.rebase_status()?;
             } else if sub_matches.is_present("continue_rebase") {
-                git_chain.rebase_continue()?;
+                git_chain.rebase_continue(cleanup_backups)?;
             } else if sub_matches.is_present("skip_rebase") {
-                git_chain.rebase_skip()?;
+                git_chain.rebase_skip(cleanup_backups)?;
             } else if sub_matches.is_present("abort_rebase") {
                 git_chain.rebase_abort()?;
             } else {
@@ -291,6 +293,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                         step_rebase,
                         ignore_root,
                         squashed_merge_handling,
+                        cleanup_backups,
                     )?;
                 } else {
                     eprintln!("Unable to rebase chain.");

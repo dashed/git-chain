@@ -183,6 +183,13 @@ where
                     "skip_rebase",
                 ])
                 .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("cleanup_backups")
+                .long("cleanup-backups")
+                .help("Delete backup branches after successful rebase")
+                .conflicts_with_all(&["abort_rebase", "status_rebase"])
+                .takes_value(false),
         );
 
     let push_subcommand = SubCommand::with_name("push")

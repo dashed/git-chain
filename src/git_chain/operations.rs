@@ -20,6 +20,7 @@ impl GitChain {
         step_rebase: bool,
         ignore_root: bool,
         squashed_merge_handling: SquashedRebaseHandling,
+        cleanup_backups: bool,
     ) -> Result<(), Error> {
         // Check for existing chain rebase state (not for step mode)
         if !step_rebase && state_exists(&self.repo) {
@@ -333,6 +334,9 @@ impl GitChain {
             }
             let state = read_state(&self.repo)?;
             self.print_rebase_summary(&state, num_of_rebase_operations);
+            if cleanup_backups {
+                self.cleanup_backup_branches(chain_name, &state.branches);
+            }
             let _ = delete_state(&self.repo);
         }
 
@@ -399,7 +403,7 @@ impl GitChain {
         Ok(())
     }
 
-    pub fn rebase_continue(&self) -> Result<(), Error> {
+    pub fn rebase_continue(&self, cleanup_backups: bool) -> Result<(), Error> {
         // 1. Verify state file exists
         if !state_exists(&self.repo) {
             return Err(Error::from_str(
@@ -688,6 +692,10 @@ impl GitChain {
 
         // Print summary and clean up
         self.print_rebase_summary(&state, num_of_rebase_operations);
+        let chain_name = state.chain_name.clone();
+        if cleanup_backups {
+            self.cleanup_backup_branches(&chain_name, &state.branches);
+        }
         let _ = delete_state(&self.repo);
 
         // Return to original branch
@@ -728,7 +736,7 @@ impl GitChain {
         Ok(())
     }
 
-    pub fn rebase_skip(&self) -> Result<(), Error> {
+    pub fn rebase_skip(&self, cleanup_backups: bool) -> Result<(), Error> {
         // 1. Verify state file exists
         if !state_exists(&self.repo) {
             return Err(Error::from_str(
@@ -993,6 +1001,10 @@ impl GitChain {
 
         // Print summary and clean up
         self.print_rebase_summary(&state, num_of_rebase_operations);
+        let chain_name = state.chain_name.clone();
+        if cleanup_backups {
+            self.cleanup_backup_branches(&chain_name, &state.branches);
+        }
         let _ = delete_state(&self.repo);
 
         // Return to original branch
@@ -1107,6 +1119,53 @@ impl GitChain {
             println!("🎉 Successfully rebased chain {}", state.chain_name.bold());
         } else {
             println!("Chain {} is already up-to-date.", state.chain_name.bold());
+        }
+    }
+
+    /// Delete backup branches for a chain after successful rebase.
+    fn cleanup_backup_branches(&self, chain_name: &str, branches: &[BranchState]) {
+        let mut cleaned = 0;
+
+        for branch in branches {
+            let backup_name = format!("backup-{}/{}", chain_name, branch.name);
+            // Check if backup branch exists
+            if self.git_local_branch_exists(&backup_name).unwrap_or(false) {
+                let output = Command::new("git")
+                    .arg("branch")
+                    .arg("-D")
+                    .arg(&backup_name)
+                    .output();
+
+                match output {
+                    Ok(result) if result.status.success() => {
+                        if cleaned == 0 {
+                            println!();
+                            println!("🧹 Cleaning up backup branches...");
+                        }
+                        println!("  Deleted {}", backup_name.bold());
+                        cleaned += 1;
+                    }
+                    Ok(result) => {
+                        let stderr = String::from_utf8_lossy(&result.stderr);
+                        eprintln!(
+                            "  ⚠️  Failed to delete {}: {}",
+                            backup_name.bold(),
+                            stderr.trim()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("  ⚠️  Failed to delete {}: {}", backup_name.bold(), e);
+                    }
+                }
+            }
+        }
+
+        if cleaned > 0 {
+            println!(
+                "  Cleaned up {} backup branch{}.",
+                cleaned,
+                if cleaned == 1 { "" } else { "es" }
+            );
         }
     }
 
