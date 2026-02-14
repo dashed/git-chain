@@ -341,18 +341,52 @@ chain_name
         stderr
     );
     assert!(
-        stderr.contains("Resolve any rebase merge conflicts, and then run git chain rebase"),
-        "stderr should contain resolution instructions, got: {}",
+        stderr.contains("rebase --continue"),
+        "stderr should contain --continue instructions, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("rebase --abort"),
+        "stderr should contain --abort instructions, got: {}",
         stderr
     );
 
     assert_eq!(repo.state(), RepositoryState::RebaseInteractive);
 
+    // Verify state file was created during conflict
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // Resolve conflict and complete git-level rebase
     commit_all(&repo, "add conflict");
     run_git_command(&path_to_repo, vec!["rebase", "--continue"]);
 
     assert_eq!(repo.state(), RepositoryState::Clean);
     assert_eq!(&get_current_branch_name(&repo), "some_branch_2");
+
+    // Complete the chain rebase
+    let args: Vec<&str> = vec!["rebase", "--continue"];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    println!("CONTINUE STDOUT: {}", stdout);
+    assert!(
+        stdout.contains("Continuing chain rebase"),
+        "should show continue message, got: {}",
+        stdout
+    );
+
+    // Verify state file was cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful continue"
+    );
+
+    // After --continue, we should be back on the original branch (some_branch_1)
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
 
     // git chain
     let args: Vec<&str> = vec![];
@@ -361,11 +395,11 @@ chain_name
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         r#"
-On branch: some_branch_2
+On branch: some_branch_1
 
 chain_name
-    ➜ some_branch_2 ⦁ 1 ahead
-      some_branch_1 ⦁ 2 ahead
+      some_branch_2 ⦁ 1 ahead
+    ➜ some_branch_1 ⦁ 2 ahead
       master (root branch)
 "#
         .trim_start()
