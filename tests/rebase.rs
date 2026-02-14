@@ -4,9 +4,10 @@ use git2::RepositoryState;
 pub mod common;
 
 use common::{
-    checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
-    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin_expect_err,
-    run_test_bin_expect_ok, run_test_bin_for_rebase, setup_git_repo, teardown_git_repo,
+    branch_equal, branch_exists, checkout_branch, commit_all, create_branch, create_new_file,
+    first_commit_all, generate_path_to_repo, get_current_branch_name, run_git_command,
+    run_test_bin_expect_err, run_test_bin_expect_ok, run_test_bin_for_rebase, setup_git_repo,
+    teardown_git_repo,
 };
 
 #[test]
@@ -820,16 +821,49 @@ chain_name
     let args: Vec<&str> = vec!["rebase"];
     let output = run_test_bin_for_rebase(&path_to_repo, args);
 
-    assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("⚠️  Branch some_branch_1 is detected to be squashed and merged onto master."));
-    assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("Resetting branch some_branch_1 to master"));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("git reset --hard master"));
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Switching back to branch: some_branch_1")
+        stdout.contains(
+            "⚠️  Branch some_branch_1 is detected to be squashed and merged onto master."
+        ),
+        "should detect squash merge, got: {}",
+        stdout
     );
-    assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("🎉 Successfully rebased chain chain_name"));
+    assert!(
+        stdout.contains("📦 Created backup branch: backup-chain_name/some_branch_1"),
+        "should create backup branch before reset, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Resetting branch some_branch_1 to master"),
+        "should reset branch, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("git reset --hard master"),
+        "should show reset command, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Switching back to branch: some_branch_1"),
+        "should switch back, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("🎉 Successfully rebased chain chain_name"),
+        "should show success message, got: {}",
+        stdout
+    );
+
+    // Verify backup branch exists and points to the pre-reset state
+    assert!(
+        branch_exists(&repo, "backup-chain_name/some_branch_1"),
+        "backup branch should exist after squash-merge reset"
+    );
 
     // git chain
     let args: Vec<&str> = vec![];
@@ -1431,6 +1465,197 @@ fn rebase_missing_branch_in_chain() {
 
     // Ensure we're still on the same branch
     assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_squashed_merge_skip() {
+    let repo_name = "rebase_squashed_merge_skip";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create some_branch_1 with commits
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit 1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 2");
+        commit_all(&repo, "branch 1 commit 2");
+    };
+
+    // create some_branch_2 with a commit
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // set up chain
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // squash and merge some_branch_1 onto master
+    checkout_branch(&repo, "master");
+    run_git_command(&path_to_repo, vec!["merge", "--squash", "some_branch_1"]);
+    commit_all(&repo, "squash merge");
+
+    // Record some_branch_1 commit before rebase to verify it's NOT reset
+    checkout_branch(&repo, "some_branch_1");
+    let branch1_commit_before = repo
+        .revparse_single("some_branch_1")
+        .unwrap()
+        .id()
+        .to_string();
+
+    // Run rebase with --squashed-merge=skip
+    let args: Vec<&str> = vec!["rebase", "--squashed-merge=skip"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STATUS: {}", output.status.success());
+
+    assert!(
+        output.status.success(),
+        "rebase with --squashed-merge=skip should succeed"
+    );
+    assert!(
+        stdout.contains("Skipping branch some_branch_1"),
+        "should show skip message, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("git reset --hard"),
+        "should NOT reset when skipping, got: {}",
+        stdout
+    );
+
+    // Verify some_branch_1 was NOT reset — still has original commits
+    let branch1_commit_after = repo
+        .revparse_single("some_branch_1")
+        .unwrap()
+        .id()
+        .to_string();
+    assert_eq!(
+        branch1_commit_before, branch1_commit_after,
+        "some_branch_1 should not be modified when skipped"
+    );
+
+    // Verify no backup branch was created (skip doesn't need backup)
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/some_branch_1"),
+        "no backup branch should be created when skipping"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_squashed_merge_force_rebase() {
+    let repo_name = "rebase_squashed_merge_force_rebase";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create some_branch_1 with a single commit (single commit ensures git's
+    // patch-ID detection cleanly drops the already-upstream patch during rebase)
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // set up chain (single branch for simplicity)
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "some_branch_1"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // squash and merge some_branch_1 onto master
+    checkout_branch(&repo, "master");
+    run_git_command(&path_to_repo, vec!["merge", "--squash", "some_branch_1"]);
+    commit_all(&repo, "squash merge");
+
+    // Run rebase with --squashed-merge=rebase (force normal rebase)
+    checkout_branch(&repo, "some_branch_1");
+    let args: Vec<&str> = vec!["rebase", "--squashed-merge=rebase"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+    println!("STATUS: {}", output.status.success());
+
+    assert!(
+        output.status.success(),
+        "rebase with --squashed-merge=rebase should succeed"
+    );
+    assert!(
+        stdout.contains("forcing rebase as requested"),
+        "should show forcing message, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("git reset --hard"),
+        "should NOT use reset --hard when forcing rebase, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("git rebase --keep-empty --onto"),
+        "should perform normal rebase, got: {}",
+        stdout
+    );
+
+    // Verify no backup branch was created (rebase mode doesn't need backup)
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/some_branch_1"),
+        "no backup branch should be created when forcing rebase"
+    );
+
+    // After forced rebase, some_branch_1 should point to same commit as master
+    // because git's patch-ID detection drops the already-upstream patch
+    assert!(
+        branch_equal(&repo, "some_branch_1", "master"),
+        "after forced rebase of squash-merged branch, it should match master"
+    );
 
     teardown_git_repo(repo_name);
 }
