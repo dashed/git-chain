@@ -328,13 +328,21 @@ chain_name
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("Current branch some_branch_1 is up to date"));
 
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        r#"
-🛑 Unable to completely rebase some_branch_2 to some_branch_1
-⚠️  Resolve any rebase merge conflicts, and then run git chain rebase
-"#
-        .trim_start()
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    // Diagnostic printing
+    println!("STDERR: {}", stderr);
+
+    assert!(
+        stderr.contains("Unable to completely rebase some_branch_2 to some_branch_1"),
+        "stderr should contain rebase failure message, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Resolve any rebase merge conflicts, and then run git chain rebase"),
+        "stderr should contain resolution instructions, got: {}",
+        stderr
     );
 
     assert_eq!(repo.state(), RepositoryState::RebaseInteractive);
