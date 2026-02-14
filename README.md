@@ -118,6 +118,18 @@ Git Chain's rebase command offers customization through its flags:
   ```
   Rolls back the entire chain rebase by restoring all branches to their original positions before the rebase started. Aborts any in-progress git rebase and cleans up the state file.
 
+- **`--status`**: Show the current chain rebase state
+  ```
+  git chain rebase --status
+  ```
+  Displays the status of each branch in an ongoing chain rebase, including which branches have been completed, skipped, or are still pending. Reports "No chain rebase in progress" when no state file exists.
+
+- **`--cleanup-backups`**: Delete backup branches after successful rebase
+  ```
+  git chain rebase --cleanup-backups
+  ```
+  After a successful rebase, automatically deletes any `backup-<chain>/<branch>` branches that were created during squash-merge reset. Can also be combined with `--continue` and `--skip`.
+
 - **`--squashed-merge=<mode>`**: How to handle branches detected as squash-merged
   ```
   git chain rebase --squashed-merge=reset   # Default: auto-backup + reset to parent
@@ -258,6 +270,40 @@ $ git chain rebase --continue
 Continuing chain rebase...
 Rebasing branch feature/profiles onto feature/auth...
 # Continues with remaining branches
+```
+
+### Progress Reporting and Summary
+
+When rebasing a chain, git-chain provides real-time progress and a summary report:
+
+**During rebase**:
+```
+📌 [1/3] Rebasing feature-auth onto master...
+📌 [2/3] Rebasing feature-profiles onto feature-auth...
+📌 [3/3] Rebasing feature-settings onto feature-profiles...
+```
+
+**After completion**:
+```
+📊 Rebase Summary for Chain: my-feature
+  ✅ Rebased: 3
+
+🎉 Successfully rebased chain my-feature
+```
+
+**Checking rebase status** during a conflict:
+```
+$ git chain rebase --status
+
+📊 Chain Rebase Status: my-feature
+   Root: master
+
+   ✅ feature-auth (1/3) onto master — Completed
+   ❌ feature-profiles (2/3) onto feature-auth — Conflict  ← current
+   ⏳ feature-settings (3/3) onto feature-profiles — Pending
+
+   Progress: 1/3 branches completed
+   Original branch: feature-settings
 ```
 
 ### Recovery Options
@@ -676,6 +722,12 @@ git chain rebase --step
 
 # Skip rebasing the first branch onto the root branch
 git chain rebase --ignore-root
+
+# Show the status of an in-progress chain rebase
+git chain rebase --status
+
+# Delete backup branches after successful rebase
+git chain rebase --cleanup-backups
 
 # Specify how to handle squash-merged branches during rebase
 git chain rebase --squashed-merge=reset   # Auto-backup + reset (default)

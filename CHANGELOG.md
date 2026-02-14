@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Rebase now shows progress reporting during chain rebase: `📌 [2/5] Rebasing feature-auth onto main...`
+- Rebase completion now shows a summary report with counts by category (rebased, skipped, squash-reset)
+- `rebase --continue` and `rebase --skip` now show progress reporting and summary report
 - Rebase conflict error message now shows numbered recovery steps with `--continue` and `--abort` instructions
 - Replaced `process::exit(1)` with proper error propagation in core operations
   - `rebase`, `backup`, `push`, `prune`, and `pr` operations now return `Result<(), Error>` instead of calling `process::exit(1)`
@@ -62,6 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `rebase_squashed_merge_skip`, `rebase_squashed_merge_force_rebase`
 - Added `lint` Makefile target (combines `fmt-check` + `clippy-strict`)
 - Added `test-file` Makefile target for running all tests in a specific file
+- Added `--status` flag to `rebase` command to show current chain rebase state
+  - Displays per-branch status with emoji indicators (Completed, Skipped, Pending, Conflict, etc.)
+  - Shows progress through the chain and original branch information
+  - Reports "No chain rebase in progress" when no state file exists
+- Added `--cleanup-backups` flag to `rebase` command for deleting backup branches after successful rebase
+  - Works with `rebase`, `rebase --continue`, and `rebase --skip`
+  - Deletes `backup-<chain>/<branch>` branches created during squash-merge reset
+  - Reports count of cleaned up backup branches
+- Added integration tests for Phase 3 polish and UX features:
+  - `rebase_progress_reporting`, `rebase_status_no_state`, `rebase_status_during_conflict`
+  - `rebase_cleanup_backups`, `rebase_no_cleanup_without_flag`, `rebase_summary_report_with_skipped_branches`
 - Added integration tests for error propagation:
   - `rebase_nonexistent_chain`, `rebase_dirty_working_directory`, `rebase_missing_branch_in_chain`
   - `backup_nonexistent_chain`, `push_nonexistent_chain`, `prune_nonexistent_chain`
