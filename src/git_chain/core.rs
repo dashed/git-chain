@@ -318,6 +318,19 @@ impl GitChain {
         Ok(commit.id().to_string())
     }
 
+    pub fn get_branch_commit_oid(&self, branch_name: &str) -> Result<String, Error> {
+        match self
+            .repo
+            .revparse_single(&format!("refs/heads/{}", branch_name))
+        {
+            Ok(obj) => Ok(obj.id().to_string()),
+            Err(_) => Err(Error::from_str(&format!(
+                "Unable to get commit OID for branch {}",
+                branch_name
+            ))),
+        }
+    }
+
     pub fn get_tree_id_from_branch_name(&self, branch_name: &str) -> Result<String, Error> {
         match self
             .repo
