@@ -132,14 +132,39 @@ where
             Arg::with_name("continue_rebase")
                 .long("continue")
                 .help("Continue the chain rebase after resolving conflicts")
-                .conflicts_with_all(&["step", "ignore_root", "squashed_merge", "abort_rebase"])
+                .conflicts_with_all(&[
+                    "step",
+                    "ignore_root",
+                    "squashed_merge",
+                    "abort_rebase",
+                    "skip_rebase",
+                ])
                 .takes_value(false),
         )
         .arg(
             Arg::with_name("abort_rebase")
                 .long("abort")
                 .help("Abort the chain rebase and restore all branches to their original state")
-                .conflicts_with_all(&["step", "ignore_root", "squashed_merge", "continue_rebase"])
+                .conflicts_with_all(&[
+                    "step",
+                    "ignore_root",
+                    "squashed_merge",
+                    "continue_rebase",
+                    "skip_rebase",
+                ])
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("skip_rebase")
+                .long("skip")
+                .help("Skip the current conflicted branch and continue with the rest of the chain")
+                .conflicts_with_all(&[
+                    "step",
+                    "ignore_root",
+                    "squashed_merge",
+                    "continue_rebase",
+                    "abort_rebase",
+                ])
                 .takes_value(false),
         );
 
