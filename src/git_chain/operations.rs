@@ -322,8 +322,17 @@ impl GitChain {
             }
         }
 
-        // Clean up state file on successful completion
+        // Print summary and clean up state file on successful completion
         if !step_rebase {
+            if ignore_root {
+                println!();
+                println!(
+                    "⚠️ Did not rebase chain against root branch: {}",
+                    root_branch.bold()
+                );
+            }
+            let state = read_state(&self.repo)?;
+            self.print_rebase_summary(&state, num_of_rebase_operations);
             let _ = delete_state(&self.repo);
         }
 
@@ -335,31 +344,29 @@ impl GitChain {
             self.checkout_branch(&orig_branch)?;
         }
 
-        println!();
-        if step_rebase
-            && num_of_rebase_operations == 1
-            && num_of_branches_visited != chain.branches.len()
-        {
-            println!("Performed one rebase on branch: {}", current_branch.bold());
-            println!();
-            println!(
-                "To continue rebasing, run {} rebase --step",
-                self.executable_name
-            );
-
-            return Ok(());
-        }
-
-        if ignore_root {
-            println!(
-                "⚠️ Did not rebase chain against root branch: {}",
-                root_branch.bold()
-            );
-        }
-        if num_of_rebase_operations > 0 {
-            println!("🎉 Successfully rebased chain {}", chain.name.bold());
-        } else {
-            println!("Chain {} is already up-to-date.", chain.name.bold());
+        if step_rebase {
+            if num_of_rebase_operations == 1 && num_of_branches_visited != chain.branches.len() {
+                println!();
+                println!("Performed one rebase on branch: {}", current_branch.bold());
+                println!();
+                println!(
+                    "To continue rebasing, run {} rebase --step",
+                    self.executable_name
+                );
+            } else {
+                println!();
+                if ignore_root {
+                    println!(
+                        "⚠️ Did not rebase chain against root branch: {}",
+                        root_branch.bold()
+                    );
+                }
+                if num_of_rebase_operations > 0 {
+                    println!("🎉 Successfully rebased chain {}", chain.name.bold());
+                } else {
+                    println!("Chain {} is already up-to-date.", chain.name.bold());
+                }
+            }
         }
 
         Ok(())
@@ -679,7 +686,8 @@ impl GitChain {
             }
         }
 
-        // Success — clean up state file
+        // Print summary and clean up
+        self.print_rebase_summary(&state, num_of_rebase_operations);
         let _ = delete_state(&self.repo);
 
         // Return to original branch
@@ -688,16 +696,6 @@ impl GitChain {
             println!();
             println!("Switching back to branch: {}", state.original_branch.bold());
             self.checkout_branch(&state.original_branch)?;
-        }
-
-        println!();
-        if num_of_rebase_operations > 0 {
-            println!(
-                "🎉 Successfully continued and completed chain rebase for chain {}",
-                state.chain_name.bold()
-            );
-        } else {
-            println!("Chain {} is already up-to-date.", state.chain_name.bold());
         }
 
         Ok(())
@@ -993,7 +991,8 @@ impl GitChain {
             }
         }
 
-        // Success — clean up state file
+        // Print summary and clean up
+        self.print_rebase_summary(&state, num_of_rebase_operations);
         let _ = delete_state(&self.repo);
 
         // Return to original branch
@@ -1004,17 +1003,46 @@ impl GitChain {
             self.checkout_branch(&state.original_branch)?;
         }
 
+        Ok(())
+    }
+
+    /// Print a summary report after rebase completion.
+    fn print_rebase_summary(&self, state: &ChainRebaseState, num_of_rebase_operations: usize) {
+        let completed = state
+            .branches
+            .iter()
+            .filter(|b| b.status == BranchRebaseStatus::Completed)
+            .count();
+        let skipped = state
+            .branches
+            .iter()
+            .filter(|b| b.status == BranchRebaseStatus::Skipped)
+            .count();
+        let squash_reset = state
+            .branches
+            .iter()
+            .filter(|b| b.status == BranchRebaseStatus::SquashReset)
+            .count();
+
+        println!();
+        println!("📊 Rebase Summary for Chain: {}", state.chain_name.bold());
+
+        if completed > 0 {
+            println!("  ✅ Rebased: {}", completed);
+        }
+        if skipped > 0 {
+            println!("  ⏭️  Skipped: {}", skipped);
+        }
+        if squash_reset > 0 {
+            println!("  🔄 Reset (squash-merge): {}", squash_reset);
+        }
+
         println!();
         if num_of_rebase_operations > 0 {
-            println!(
-                "🎉 Successfully continued and completed chain rebase for chain {}",
-                state.chain_name.bold()
-            );
+            println!("🎉 Successfully rebased chain {}", state.chain_name.bold());
         } else {
             println!("Chain {} is already up-to-date.", state.chain_name.bold());
         }
-
-        Ok(())
     }
 
     pub fn rebase_abort(&self) -> Result<(), Error> {
