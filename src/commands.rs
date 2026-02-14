@@ -260,6 +260,8 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
         ("rebase", Some(sub_matches)) => {
             if sub_matches.is_present("continue_rebase") {
                 git_chain.rebase_continue()?;
+            } else if sub_matches.is_present("skip_rebase") {
+                git_chain.rebase_skip()?;
             } else if sub_matches.is_present("abort_rebase") {
                 git_chain.rebase_abort()?;
             } else {
