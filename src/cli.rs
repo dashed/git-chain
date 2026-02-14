@@ -138,6 +138,7 @@ where
                     "squashed_merge",
                     "abort_rebase",
                     "skip_rebase",
+                    "status_rebase",
                 ])
                 .takes_value(false),
         )
@@ -151,6 +152,7 @@ where
                     "squashed_merge",
                     "continue_rebase",
                     "skip_rebase",
+                    "status_rebase",
                 ])
                 .takes_value(false),
         )
@@ -164,6 +166,21 @@ where
                     "squashed_merge",
                     "continue_rebase",
                     "abort_rebase",
+                    "status_rebase",
+                ])
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("status_rebase")
+                .long("status")
+                .help("Show the current chain rebase state")
+                .conflicts_with_all(&[
+                    "step",
+                    "ignore_root",
+                    "squashed_merge",
+                    "continue_rebase",
+                    "abort_rebase",
+                    "skip_rebase",
                 ])
                 .takes_value(false),
         );

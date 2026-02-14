@@ -1006,6 +1006,71 @@ impl GitChain {
         Ok(())
     }
 
+    /// Display the current chain rebase status.
+    pub fn rebase_status(&self) -> Result<(), Error> {
+        if !state_exists(&self.repo) {
+            println!("No chain rebase in progress.");
+            return Ok(());
+        }
+
+        let state = read_state(&self.repo)?;
+
+        println!();
+        println!("📊 Chain Rebase Status: {}", state.chain_name.bold());
+        println!("   Root: {}", state.root_branch.bold());
+        println!();
+
+        for (i, branch) in state.branches.iter().enumerate() {
+            let (icon, status_label) = match branch.status {
+                BranchRebaseStatus::Completed => ("✅", "Completed"),
+                BranchRebaseStatus::Skipped => ("⏭️ ", "Skipped"),
+                BranchRebaseStatus::SquashReset => ("🔄", "Reset (squash-merge)"),
+                BranchRebaseStatus::Conflict => ("❌", "Conflict"),
+                BranchRebaseStatus::InProgress => ("🔧", "In Progress"),
+                BranchRebaseStatus::Failed => ("💥", "Failed"),
+                BranchRebaseStatus::Pending => ("⏳", "Pending"),
+            };
+
+            let current_marker = if branch.status == BranchRebaseStatus::Conflict
+                || branch.status == BranchRebaseStatus::InProgress
+            {
+                "  ← current"
+            } else {
+                ""
+            };
+
+            println!(
+                "   {} {} ({}/{}) onto {} — {}{}",
+                icon,
+                branch.name.bold(),
+                i + 1,
+                state.total_count,
+                branch.parent,
+                status_label,
+                current_marker
+            );
+        }
+
+        let completed = state
+            .branches
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.status,
+                    BranchRebaseStatus::Completed
+                        | BranchRebaseStatus::Skipped
+                        | BranchRebaseStatus::SquashReset
+                )
+            })
+            .count();
+
+        println!();
+        println!("   Progress: {}/{} completed", completed, state.total_count);
+        println!("   Original branch: {}", state.original_branch.bold());
+
+        Ok(())
+    }
+
     /// Print a summary report after rebase completion.
     fn print_rebase_summary(&self, state: &ChainRebaseState, num_of_rebase_operations: usize) {
         let completed = state
