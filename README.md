@@ -106,6 +106,12 @@ Git Chain's rebase command offers customization through its flags:
   ```
   After resolving a rebase conflict and completing the git-level rebase (`git rebase --continue`), use this to continue rebasing the remaining branches in the chain. Uses saved merge bases from the original run.
 
+- **`--skip`**: Skip the current conflicted branch and continue with the rest of the chain
+  ```
+  git chain rebase --skip
+  ```
+  When a rebase conflict occurs and you don't want to resolve it, use `--skip` to restore the conflicted branch to its original position and continue rebasing the remaining branches. This aborts any in-progress git rebase automatically.
+
 - **`--abort`**: Abort a chain rebase and restore all branches
   ```
   git chain rebase --abort
@@ -171,6 +177,11 @@ git rebase --continue
 git chain rebase --continue
 ```
 
+Or if you want to skip the conflicted branch and continue with the rest:
+```
+git chain rebase --skip
+```
+
 Or if you want to abort the entire chain rebase and restore all branches:
 ```
 git chain rebase --abort
@@ -194,7 +205,7 @@ When rebasing branches in a chain, conflicts can sometimes occur. Git Chain save
    - Pauses the rebasing process at the conflicted commit
    - Saves the chain rebase state (original branch refs, merge bases, per-branch status)
    - Leaves the repository in a conflicted state for you to resolve
-   - Provides numbered recovery steps with `--continue` and `--abort` instructions
+   - Provides numbered recovery steps with `--continue`, `--skip`, and `--abort` instructions
 
 2. **Resolution Process**:
    - The conflicted files will be marked with conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`)
@@ -210,12 +221,24 @@ When rebasing branches in a chain, conflicts can sometimes occur. Git Chain save
    - Git Chain loads the saved state and continues rebasing the remaining branches using pre-computed merge bases
    - After all branches are rebased, the state file is cleaned up and you are returned to your original branch
 
-4. **Aborting a Problematic Rebase**:
-   - If you decide not to resolve the conflicts, abort the entire chain rebase:
+4. **Skipping a Problematic Branch**:
+   - If you don't want to resolve the conflict for a particular branch, skip it and continue:
+   ```
+   git chain rebase --skip
+   ```
+   - This aborts the in-progress git rebase, restores the conflicted branch to its original position, and continues rebasing the remaining branches
+
+5. **Aborting the Entire Chain Rebase**:
+   - If you decide to cancel the entire chain rebase and restore all branches:
    ```
    git chain rebase --abort
    ```
    - This restores all branches to their original positions, aborts any in-progress git rebase, and cleans up the state file
+
+6. **External Abort Detection**:
+   - If you run `git rebase --abort` directly (bypassing git-chain), git-chain detects this when you run `--continue`
+   - It compares the branch's current commit with the saved original ref to determine if the rebase was aborted externally
+   - You'll be prompted to use `--skip` to skip the branch or `--abort` to cancel the entire chain rebase
 
 **Example Conflict Workflow**:
 ```
@@ -241,25 +264,30 @@ Rebasing branch feature/profiles onto feature/auth...
 
 If a rebase goes wrong, Git Chain provides several recovery options:
 
-1. **Abort Chain Rebase**: If a chain rebase is in progress (state file exists), abort and restore all branches:
+1. **Skip Conflicted Branch**: Skip the branch that has conflicts and continue with the rest of the chain:
+   ```
+   git chain rebase --skip
+   ```
+
+2. **Abort Chain Rebase**: If a chain rebase is in progress (state file exists), abort and restore all branches:
    ```
    git chain rebase --abort
    ```
 
-2. **Backup Branches**: Backup branches are automatically created when squash-merged branches are reset (via `--squashed-merge=reset`). You can also create backups manually with `git chain backup`. To restore:
+3. **Backup Branches**: Backup branches are automatically created when squash-merged branches are reset (via `--squashed-merge=reset`). You can also create backups manually with `git chain backup`. To restore:
    ```
    git checkout branch-name
    git reset --hard backup-chain-name/branch-name
    ```
 
-3. **Reflog**: Even without backups, you can recover using Git's reflog:
+4. **Reflog**: Even without backups, you can recover using Git's reflog:
    ```
    git checkout branch-name
    git reflog
    git reset --hard branch-name@{1}  # Reset to previous state
    ```
 
-4. **Abort Git-Level Rebase**: If only the git-level rebase needs aborting (before using `--abort`):
+5. **Abort Git-Level Rebase**: If only the git-level rebase needs aborting (before using `--abort`):
    ```
    git rebase --abort
    ```

@@ -16,6 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated CLAUDE.md to reference Makefile targets instead of raw cargo commands
 
 ### Added
+- Added `--skip` flag to `rebase` command for skipping a conflicted branch and continuing the chain rebase
+  - Aborts any in-progress git rebase
+  - Restores the conflicted branch to its original position using saved refs
+  - Marks the branch as Skipped and resumes rebasing from the next pending branch
+- Added external `git rebase --abort` detection in `rebase --continue`
+  - Detects when the user has aborted a git rebase directly (bypassing git-chain)
+  - Compares branch's current OID with saved original ref to identify external aborts
+  - Provides clear error message suggesting `--skip` or `--abort`
+- Added chain modification validation in `rebase --continue` and `rebase --skip`
+  - Validates that pending branches still exist before attempting to rebase them
+  - Warns and automatically skips branches that were deleted externally during a chain rebase
+- Added atomic state file writes using write-to-temp-then-rename pattern
+  - Prevents state file corruption if the process is killed mid-write
+- Added integration tests for rebase --skip:
+  - `rebase_skip_conflicted_branch`, `rebase_skip_no_state`, `rebase_skip_then_verify_chain_status`
+- Added integration tests for robustness features:
+  - `rebase_continue_after_external_abort`, `rebase_continue_with_deleted_branch`
 - Added `--continue` flag to `rebase` command for resuming a chain rebase after resolving conflicts
   - Loads saved state from `.git/chain-rebase-state.json`
   - Marks the conflicted branch as completed and resumes from the next pending branch
