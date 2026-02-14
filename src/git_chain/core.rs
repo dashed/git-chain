@@ -173,8 +173,10 @@ impl GitChain {
 
         match results {
             BranchSearchResult::NotPartOfAnyChain => {
-                self.display_branch_not_part_of_chain_error(&branch_name);
-                process::exit(1);
+                return Err(Error::from_str(&format!(
+                    "Branch is not part of any chain: {}\nTo initialize a chain for this branch, run {} init <chain_name> <root_branch>",
+                    &branch_name, self.executable_name
+                )));
             }
             BranchSearchResult::Branch(branch) => {
                 branch.display_status(self, show_prs)?;
@@ -199,8 +201,10 @@ impl GitChain {
 
                 match Branch::get_branch_with_chain(self, branch_name)? {
                     BranchSearchResult::NotPartOfAnyChain => {
-                        eprintln!("Unable to set up chain for branch: {}", branch_name.bold());
-                        process::exit(1);
+                        return Err(Error::from_str(&format!(
+                            "Unable to set up chain for branch: {}",
+                            branch_name
+                        )));
                     }
                     BranchSearchResult::Branch(branch) => {
                         println!("🔗 Succesfully set up branch: {}", branch_name.bold());
@@ -210,12 +214,10 @@ impl GitChain {
                 };
             }
             BranchSearchResult::Branch(branch) => {
-                eprintln!("❌ Unable to initialize branch to a chain.",);
-                eprintln!();
-                eprintln!("Branch already part of a chain: {}", branch_name.bold());
-                eprintln!("It is part of the chain: {}", branch.chain_name.bold());
-                eprintln!("With root branch: {}", branch.root_branch.bold());
-                process::exit(1);
+                return Err(Error::from_str(&format!(
+                    "Unable to initialize branch to a chain.\nBranch already part of a chain: {}\nIt is part of the chain: {}\nWith root branch: {}",
+                    branch_name, branch.chain_name, branch.root_branch
+                )));
             }
         };
 
@@ -282,16 +284,20 @@ impl GitChain {
     ) -> Result<(), Error> {
         match Branch::get_branch_with_chain(self, branch_name)? {
             BranchSearchResult::NotPartOfAnyChain => {
-                self.display_branch_not_part_of_chain_error(branch_name);
-                process::exit(1);
+                return Err(Error::from_str(&format!(
+                    "Branch is not part of any chain: {}\nTo initialize a chain for this branch, run {} init <chain_name> <root_branch>",
+                    branch_name, self.executable_name
+                )));
             }
             BranchSearchResult::Branch(branch) => {
                 branch.move_branch(self, chain_name, sort_option)?;
 
                 match Branch::get_branch_with_chain(self, &branch.branch_name)? {
                     BranchSearchResult::NotPartOfAnyChain => {
-                        eprintln!("Unable to move branch: {}", branch.branch_name.bold());
-                        process::exit(1);
+                        return Err(Error::from_str(&format!(
+                            "Unable to move branch: {}",
+                            branch.branch_name
+                        )));
                     }
                     BranchSearchResult::Branch(branch) => {
                         println!("🔗 Succesfully moved branch: {}", branch.branch_name.bold());

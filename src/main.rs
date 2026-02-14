@@ -58,10 +58,8 @@ pub fn check_gh_cli_installed() -> Result<(), git2::Error> {
     let output = std::process::Command::new("gh").arg("--version").output();
     match output {
         Ok(output) if output.status.success() => Ok(()),
-        _ => {
-            eprintln!("The GitHub CLI (gh) is not installed or not found in the PATH.");
-            eprintln!("Please install it from https://cli.github.com/ and ensure it's available in your PATH.");
-            process::exit(1);
-        }
+        _ => Err(git2::Error::from_str(
+            "The GitHub CLI (gh) is not installed or not found in the PATH.\nPlease install it from https://cli.github.com/ and ensure it's available in your PATH.",
+        )),
     }
 }

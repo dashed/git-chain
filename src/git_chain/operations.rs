@@ -1,23 +1,13 @@
 use std::io::{self, Write};
-use std::process::{self, Command};
+use std::process::Command;
 
 use colored::*;
 use git2::{Error, RepositoryState};
 
 use super::GitChain;
+use crate::error::ErrorExt;
 use crate::{check_gh_cli_installed, Chain};
 
-pub fn print_rebase_error(executable_name: &str, branch: &str, upstream_branch: &str) {
-    eprintln!(
-        "🛑 Unable to completely rebase {} to {}",
-        branch.bold(),
-        upstream_branch.bold()
-    );
-    eprintln!(
-        "⚠️  Resolve any rebase merge conflicts, and then run {} rebase",
-        executable_name
-    );
-}
 impl GitChain {
     pub fn rebase(
         &self,
@@ -120,8 +110,8 @@ impl GitChain {
                     .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
 
                 if !output.status.success() {
-                    eprintln!("Unable to run: {}", &command);
-                    process::exit(1);
+                    let _ = self.checkout_branch(&orig_branch);
+                    return Err(Error::from_str(&format!("Unable to run: {}", &command)));
                 }
 
                 println!(
@@ -156,11 +146,15 @@ impl GitChain {
             match self.repo.state() {
                 RepositoryState::Clean => {
                     if !output.status.success() {
-                        eprintln!("Command returned non-zero exit status: {}", command);
-                        eprintln!("It returned: {}", output.status.code().unwrap());
                         io::stdout().write_all(&output.stdout).unwrap();
                         io::stderr().write_all(&output.stderr).unwrap();
-                        process::exit(1);
+                        let _ = self.checkout_branch(&orig_branch);
+                        return Err(Error::git_command_failed(
+                            command,
+                            output.status.code().unwrap_or(1),
+                            String::from_utf8_lossy(&output.stdout).to_string(),
+                            String::from_utf8_lossy(&output.stderr).to_string(),
+                        ));
                     }
                     io::stdout().write_all(&output.stdout).unwrap();
                     io::stderr().write_all(&output.stderr).unwrap();
@@ -173,12 +167,12 @@ impl GitChain {
                     // go ahead to rebase next branch.
                 }
                 _ => {
-                    print_rebase_error(
-                        &self.executable_name,
+                    return Err(Error::from_str(&format!(
+                        "🛑 Unable to completely rebase {} to {}\n⚠️  Resolve any rebase merge conflicts, and then run {} rebase",
                         &branch.branch_name,
                         prev_branch_name,
-                    );
-                    process::exit(1);
+                        self.executable_name
+                    )));
                 }
             }
         }
@@ -230,22 +224,18 @@ impl GitChain {
                     // go ahead to back up chain.
                 }
                 _ => {
-                    eprintln!(
+                    return Err(Error::from_str(&format!(
                         "🛑 Repository needs to be in a clean state before backing up chain: {}",
                         chain_name
-                    );
-                    process::exit(1);
+                    )));
                 }
             }
 
             if self.dirty_working_directory()? {
-                eprintln!(
-                    "🛑 Unable to back up branches for the chain: {}",
-                    chain.name.bold()
-                );
-                eprintln!("You have uncommitted changes in your working directory.");
-                eprintln!("Please commit or stash them.");
-                process::exit(1);
+                return Err(Error::from_str(&format!(
+                    "🛑 Unable to back up branches for the chain: {}\nYou have uncommitted changes in your working directory.\nPlease commit or stash them.",
+                    chain.name
+                )));
             }
 
             let orig_branch = self.get_current_branch_name()?;
@@ -261,9 +251,10 @@ impl GitChain {
 
             println!("🎉 Successfully backed up chain: {}", chain.name.bold());
         } else {
-            eprintln!("Unable to back up chain.");
-            eprintln!("Chain does not exist: {}", chain_name);
-            process::exit(1);
+            return Err(Error::from_str(&format!(
+                "Unable to back up chain.\nChain does not exist: {}",
+                chain_name
+            )));
         }
         Ok(())
     }
@@ -275,9 +266,10 @@ impl GitChain {
 
             println!("Pushed {} branches.", format!("{}", branches_pushed).bold());
         } else {
-            eprintln!("Unable to push branches of the chain.");
-            eprintln!("Chain does not exist: {}", chain_name);
-            process::exit(1);
+            return Err(Error::from_str(&format!(
+                "Unable to push branches of the chain.\nChain does not exist: {}",
+                chain_name
+            )));
         }
         Ok(())
     }
@@ -316,9 +308,10 @@ impl GitChain {
                 println!("No branches pruned for chain: {}", chain_name.bold());
             }
         } else {
-            eprintln!("Unable to prune branches of the chain.");
-            eprintln!("Chain does not exist: {}", chain_name);
-            process::exit(1);
+            return Err(Error::from_str(&format!(
+                "Unable to prune branches of the chain.\nChain does not exist: {}",
+                chain_name
+            )));
         }
         Ok(())
     }
@@ -509,9 +502,10 @@ impl GitChain {
                 }
             }
         } else {
-            eprintln!("Unable to create PRs for the chain.");
-            eprintln!("Chain does not exist: {}", chain_name);
-            process::exit(1);
+            return Err(Error::from_str(&format!(
+                "Unable to create PRs for the chain.\nChain does not exist: {}",
+                chain_name
+            )));
         }
         Ok(())
     }
