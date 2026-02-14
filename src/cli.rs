@@ -119,6 +119,14 @@ where
                 .value_name("ignore_root")
                 .help("Rebase each branch of the chain except for the first branch.")
                 .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("squashed_merge")
+                .long("squashed-merge")
+                .help("How to handle squashed merges [default: reset]")
+                .possible_values(&["reset", "skip", "rebase"])
+                .default_value("reset")
+                .takes_value(true),
         );
 
     let push_subcommand = SubCommand::with_name("push")

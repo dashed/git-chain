@@ -272,7 +272,17 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             if Chain::chain_exists(&git_chain, &branch.chain_name)? {
                 let step_rebase = sub_matches.is_present("step");
                 let ignore_root = sub_matches.is_present("ignore_root");
-                git_chain.rebase(&branch.chain_name, step_rebase, ignore_root)?;
+                let squashed_merge_handling = match sub_matches.value_of("squashed_merge") {
+                    Some("skip") => SquashedRebaseHandling::Skip,
+                    Some("rebase") => SquashedRebaseHandling::Rebase,
+                    _ => SquashedRebaseHandling::Reset,
+                };
+                git_chain.rebase(
+                    &branch.chain_name,
+                    step_rebase,
+                    ignore_root,
+                    squashed_merge_handling,
+                )?;
             } else {
                 eprintln!("Unable to rebase chain.");
                 eprintln!("Chain does not exist: {}", branch.chain_name.bold());

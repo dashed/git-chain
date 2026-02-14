@@ -12,6 +12,18 @@ pub enum SquashedMergeHandling {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+pub enum SquashedRebaseHandling {
+    // Reset the branch to the parent branch (with auto-backup)
+    Reset,
+
+    // Skip the squashed branch during rebase
+    Skip,
+
+    // Force normal rebase despite squash detection
+    Rebase,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ReportLevel {
     // Minimal reporting (just success/failure)
     Minimal,

@@ -6,6 +6,7 @@ use git2::{Error, RepositoryState};
 
 use super::GitChain;
 use crate::error::ErrorExt;
+use crate::types::SquashedRebaseHandling;
 use crate::{check_gh_cli_installed, Chain};
 
 impl GitChain {
@@ -14,6 +15,7 @@ impl GitChain {
         chain_name: &str,
         step_rebase: bool,
         ignore_root: bool,
+        squashed_merge_handling: SquashedRebaseHandling,
     ) -> Result<(), Error> {
         match self.preliminary_checks(chain_name) {
             Ok(_) => {}
@@ -92,36 +94,63 @@ impl GitChain {
 
             // check if current branch is squashed merged to prev_branch_name
             if self.is_squashed_merged(common_point, prev_branch_name, &branch.branch_name)? {
-                println!();
-                println!(
-                    "⚠️  Branch {} is detected to be squashed and merged onto {}.",
-                    &branch.branch_name.bold(),
-                    prev_branch_name.bold()
-                );
+                match squashed_merge_handling {
+                    SquashedRebaseHandling::Skip => {
+                        println!();
+                        println!(
+                            "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
+                            &branch.branch_name.bold(),
+                            prev_branch_name.bold()
+                        );
+                        continue;
+                    }
+                    SquashedRebaseHandling::Rebase => {
+                        println!();
+                        println!(
+                            "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
+                            &branch.branch_name.bold(),
+                            prev_branch_name.bold()
+                        );
+                        // Fall through to normal rebase below
+                    }
+                    SquashedRebaseHandling::Reset => {
+                        println!();
+                        println!(
+                            "⚠️  Branch {} is detected to be squashed and merged onto {}.",
+                            &branch.branch_name.bold(),
+                            prev_branch_name.bold()
+                        );
 
-                let command = format!("git reset --hard {}", &prev_branch_name);
+                        // Create backup before destructive reset
+                        branch.backup(self)?;
+                        let backup_name = format!("backup-{}/{}", chain_name, &branch.branch_name);
+                        println!("📦 Created backup branch: {}", backup_name.bold());
 
-                // git reset --hard <prev_branch_name>
-                let output = Command::new("git")
-                    .arg("reset")
-                    .arg("--hard")
-                    .arg(prev_branch_name)
-                    .output()
-                    .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                        let command = format!("git reset --hard {}", &prev_branch_name);
 
-                if !output.status.success() {
-                    let _ = self.checkout_branch(&orig_branch);
-                    return Err(Error::from_str(&format!("Unable to run: {}", &command)));
+                        // git reset --hard <prev_branch_name>
+                        let output = Command::new("git")
+                            .arg("reset")
+                            .arg("--hard")
+                            .arg(prev_branch_name)
+                            .output()
+                            .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+
+                        if !output.status.success() {
+                            let _ = self.checkout_branch(&orig_branch);
+                            return Err(Error::from_str(&format!("Unable to run: {}", &command)));
+                        }
+
+                        println!(
+                            "Resetting branch {} to {}",
+                            &branch.branch_name.bold(),
+                            prev_branch_name.bold()
+                        );
+                        println!("{}", command);
+
+                        continue;
+                    }
                 }
-
-                println!(
-                    "Resetting branch {} to {}",
-                    &branch.branch_name.bold(),
-                    prev_branch_name.bold()
-                );
-                println!("{}", command);
-
-                continue;
             }
 
             let command = format!(
