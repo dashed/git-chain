@@ -4544,3 +4544,538 @@ fn rebase_status_with_mixed_statuses() {
 
     teardown_git_repo(repo_name);
 }
+
+#[test]
+fn rebase_continue_squash_merge_rebase_mode() {
+    // H4: Test that rebase_continue() handles squash-merge Rebase mode correctly.
+    // The squash-merged branch must be encountered DURING --continue, not during
+    // the initial rebase, to exercise the code path in rebase_continue().
+    //
+    // Key design: branch_1's original commit (file_1.txt) must NOT conflict with master.
+    // The conflict is introduced via a SEPARATE commit on branch_1 (conflict.txt) added
+    // AFTER the squash-merge. This ensures the merge-base commit between branch_1 and
+    // branch_2 only has non-conflicting changes, so is_squashed_merged() works correctly
+    // after rebasing (git cherry compares patch-ids of all commits in common_point..dangling).
+    let repo_name = "rebase_continue_squash_merge_rebase_mode";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create branch_1 with a non-conflicting file
+    {
+        let branch_name = "branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2 with file_2.txt (will be squash-merged into branch_1)
+    {
+        let branch_name = "branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents from branch 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Create branch_3 with file_3.txt
+    {
+        let branch_name = "branch_3";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+        commit_all(&repo, "branch 3 commit");
+    };
+
+    // Set up chain: master -> branch_1 -> branch_2 -> branch_3
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "branch_1",
+        "branch_2",
+        "branch_3",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Squash-merge branch_2 INTO branch_1 (so branch_2 is detected as squash-merged)
+    {
+        checkout_branch(&repo, "branch_1");
+        run_git_command(&path_to_repo, vec!["merge", "--squash", "branch_2"]);
+        commit_all(&repo, "squash merge branch_2 into branch_1");
+    };
+
+    // Add conflicting file on branch_1 as SEPARATE commit (after squash-merge)
+    // This ensures the merge-base between branch_1 and branch_2 (the original
+    // "branch 1 commit") does NOT contain conflict.txt
+    {
+        create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+        commit_all(&repo, "branch 1 adds conflict file");
+    };
+
+    // Create conflict: master adds conflict.txt with different content
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "conflict.txt", "master conflict content");
+        commit_all(&repo, "master adds conflicting file");
+    };
+
+    // Record original positions
+    let branch_2_oid_before = repo.revparse_single("branch_2").unwrap().id().to_string();
+
+    // Run git chain rebase with --squashed-merge=rebase
+    // branch_1 should conflict with master (conflict.txt), stopping BEFORE branch_2
+    checkout_branch(&repo, "branch_1");
+    let args: Vec<&str> = vec!["rebase", "--squashed-merge=rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("INITIAL REBASE STDOUT: {}", stdout);
+    println!("INITIAL REBASE STDERR: {}", stderr);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: initial stdout: {}", stdout);
+    // assert!(false, "DEBUG STOP: initial stderr: {}", stderr);
+
+    // Verify conflict on branch_1
+    assert!(
+        stderr.contains("Unable to completely rebase branch_1"),
+        "stderr should contain rebase failure for branch_1, got: {}",
+        stderr
+    );
+
+    // Verify state file exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // Resolve conflict and complete git-level rebase
+    create_new_file(&path_to_repo, "conflict.txt", "resolved version");
+    commit_all(&repo, "resolve conflict");
+    run_git_command(&path_to_repo, vec!["rebase", "--continue"]);
+
+    assert_eq!(repo.state(), RepositoryState::Clean);
+
+    // Run git chain rebase --continue
+    // NOW branch_2 is encountered by rebase_continue() and should be detected as
+    // squash-merged onto branch_1, then force-rebased (rebase mode)
+    let args: Vec<&str> = vec!["rebase", "--continue"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_continue = String::from_utf8_lossy(&output.stderr).to_string();
+    println!("CONTINUE STDOUT: {}", stdout);
+    println!("CONTINUE STDERR: {}", stderr_continue);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: continue stdout: {}", stdout);
+    // assert!(false, "DEBUG STOP: continue stderr: {}", stderr_continue);
+
+    // Verify branch_2 was detected as squash-merged and force-rebased
+    assert!(
+        stdout.contains("forcing rebase as requested"),
+        "should show forcing rebase message for branch_2, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Resetting branch branch_2"),
+        "should NOT reset branch_2 in rebase mode, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Skipping branch branch_2"),
+        "should NOT skip branch_2 in rebase mode, got: {}",
+        stdout
+    );
+
+    // Verify no backup branch was created for branch_2 (rebase mode doesn't create backups)
+    let repo_refreshed = git2::Repository::open(&path_to_repo).unwrap();
+    assert!(
+        !branch_exists(&repo_refreshed, "backup-chain_name/branch_2"),
+        "no backup branch should be created when forcing rebase"
+    );
+
+    // Verify branch_2 OID changed (it was rebased, not skipped)
+    let branch_2_oid_after = repo_refreshed
+        .revparse_single("branch_2")
+        .unwrap()
+        .id()
+        .to_string();
+    assert_ne!(
+        branch_2_oid_before, branch_2_oid_after,
+        "branch_2 should have been rebased (OID changed)"
+    );
+
+    // Verify successful completion
+    assert!(
+        stdout.contains("Rebase Summary"),
+        "should show rebase summary, got: {}",
+        stdout
+    );
+
+    // Verify state file was cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful continue"
+    );
+
+    // Verify repo is in clean state
+    assert_eq!(repo.state(), RepositoryState::Clean);
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_skip_squash_merge_skip_mode() {
+    // H5: Test that rebase_skip() handles squash-merge Skip mode correctly.
+    // The squash-merged branch must be encountered DURING --skip's continuation,
+    // to exercise the code path in rebase_skip().
+    //
+    // Key design: same as H4 — conflict.txt is a SEPARATE commit on branch_1 added
+    // after squash-merge, so the merge-base between branch_1 and branch_2 only has
+    // non-conflicting changes (file_1.txt), allowing is_squashed_merged() to work.
+    let repo_name = "rebase_skip_squash_merge_skip_mode";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create branch_1 with a non-conflicting file
+    {
+        let branch_name = "branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2 with file_2.txt (will be squash-merged into branch_1)
+    {
+        let branch_name = "branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents from branch 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Create branch_3 with file_3.txt
+    {
+        let branch_name = "branch_3";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+        commit_all(&repo, "branch 3 commit");
+    };
+
+    // Set up chain: master -> branch_1 -> branch_2 -> branch_3
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "branch_1",
+        "branch_2",
+        "branch_3",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Squash-merge branch_2 INTO branch_1
+    {
+        checkout_branch(&repo, "branch_1");
+        run_git_command(&path_to_repo, vec!["merge", "--squash", "branch_2"]);
+        commit_all(&repo, "squash merge branch_2 into branch_1");
+    };
+
+    // Add conflicting file on branch_1 as SEPARATE commit (after squash-merge)
+    {
+        create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+        commit_all(&repo, "branch 1 adds conflict file");
+    };
+
+    // Create conflict: master adds conflict.txt with different content
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "conflict.txt", "master conflict content");
+        commit_all(&repo, "master adds conflicting file");
+    };
+
+    // Record original positions
+    let branch_2_oid_before = repo.revparse_single("branch_2").unwrap().id().to_string();
+
+    // Run git chain rebase with --squashed-merge=skip
+    // branch_1 should conflict with master (conflict.txt)
+    checkout_branch(&repo, "branch_1");
+    let args: Vec<&str> = vec!["rebase", "--squashed-merge=skip"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("INITIAL REBASE STDERR: {}", stderr);
+
+    // Verify conflict on branch_1
+    assert!(
+        stderr.contains("Unable to completely rebase branch_1"),
+        "stderr should contain rebase failure for branch_1, got: {}",
+        stderr
+    );
+
+    // Verify state file exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // Run git chain rebase --skip (skip branch_1, continue with remaining)
+    // NOW branch_2 is encountered by rebase_skip() and should be detected as
+    // squash-merged onto branch_1, then SKIPPED (skip mode)
+    let args: Vec<&str> = vec!["rebase", "--skip"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_skip = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("SKIP STDOUT: {}", stdout);
+    println!("SKIP STDERR: {}", stderr_skip);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: skip stdout: {}", stdout);
+    // assert!(false, "DEBUG STOP: skip stderr: {}", stderr_skip);
+
+    assert!(
+        output.status.success(),
+        "rebase --skip should succeed, got stderr: {}",
+        stderr_skip
+    );
+
+    // Verify branch_2 was detected as squash-merged and SKIPPED
+    assert!(
+        stdout.contains("Skipping branch branch_2"),
+        "should show skip message for branch_2 (squash-merged), got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Resetting branch branch_2"),
+        "should NOT reset branch_2 in skip mode, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("forcing rebase as requested"),
+        "should NOT force rebase when skip mode, got: {}",
+        stdout
+    );
+
+    // Verify branch_2 was NOT modified (skipped)
+    let branch_2_oid_after = repo.revparse_single("branch_2").unwrap().id().to_string();
+    assert_eq!(
+        branch_2_oid_before, branch_2_oid_after,
+        "branch_2 should not be modified when skipped"
+    );
+
+    // Verify no backup branch was created for branch_2
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_2"),
+        "no backup branch should be created when skipping"
+    );
+
+    // Verify state file was cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful skip"
+    );
+
+    // Verify repo is in clean state
+    assert_eq!(repo.state(), RepositoryState::Clean);
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_skip_squash_merge_rebase_mode() {
+    // H6: Test that rebase_skip() handles squash-merge Rebase mode correctly.
+    // The squash-merged branch must be encountered DURING --skip's continuation,
+    // to exercise the code path in rebase_skip().
+    //
+    // Key design: same as H4/H5 — conflict.txt is a SEPARATE commit on branch_1.
+    let repo_name = "rebase_skip_squash_merge_rebase_mode";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Create branch_1 with a non-conflicting file
+    {
+        let branch_name = "branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // Create branch_2 with file_2.txt (will be squash-merged into branch_1)
+    {
+        let branch_name = "branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents from branch 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    // Create branch_3 with file_3.txt
+    {
+        let branch_name = "branch_3";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+        commit_all(&repo, "branch 3 commit");
+    };
+
+    // Set up chain: master -> branch_1 -> branch_2 -> branch_3
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "branch_1",
+        "branch_2",
+        "branch_3",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Squash-merge branch_2 INTO branch_1
+    {
+        checkout_branch(&repo, "branch_1");
+        run_git_command(&path_to_repo, vec!["merge", "--squash", "branch_2"]);
+        commit_all(&repo, "squash merge branch_2 into branch_1");
+    };
+
+    // Add conflicting file on branch_1 as SEPARATE commit (after squash-merge)
+    {
+        create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+        commit_all(&repo, "branch 1 adds conflict file");
+    };
+
+    // Create conflict: master adds conflict.txt with different content
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "conflict.txt", "master conflict content");
+        commit_all(&repo, "master adds conflicting file");
+    };
+
+    // Record original positions
+    let branch_2_oid_before = repo.revparse_single("branch_2").unwrap().id().to_string();
+
+    // Run git chain rebase with --squashed-merge=rebase
+    // branch_1 should conflict with master (conflict.txt)
+    checkout_branch(&repo, "branch_1");
+    let args: Vec<&str> = vec!["rebase", "--squashed-merge=rebase"];
+    let output = run_test_bin_expect_err(&path_to_repo, args);
+
+    let stderr = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("INITIAL REBASE STDERR: {}", stderr);
+
+    // Verify conflict on branch_1
+    assert!(
+        stderr.contains("Unable to completely rebase branch_1"),
+        "stderr should contain rebase failure for branch_1, got: {}",
+        stderr
+    );
+
+    // Verify state file exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // Run git chain rebase --skip (skip branch_1, continue with remaining)
+    // NOW branch_2 is encountered by rebase_skip() and should be detected as
+    // squash-merged onto branch_1, then force-REBASED (rebase mode from saved state)
+    let args: Vec<&str> = vec!["rebase", "--skip"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_skip = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
+        .trim()
+        .to_string();
+    println!("SKIP STDOUT: {}", stdout);
+    println!("SKIP STDERR: {}", stderr_skip);
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: skip stdout: {}", stdout);
+    // assert!(false, "DEBUG STOP: skip stderr: {}", stderr_skip);
+
+    assert!(
+        output.status.success(),
+        "rebase --skip should succeed, got stderr: {}",
+        stderr_skip
+    );
+
+    // Verify branch_2 was detected as squash-merged and force-rebased
+    assert!(
+        stdout.contains("forcing rebase as requested"),
+        "should show forcing rebase message for branch_2, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Resetting branch branch_2"),
+        "should NOT reset branch_2 in rebase mode, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Skipping branch branch_2"),
+        "should NOT skip branch_2 in rebase mode, got: {}",
+        stdout
+    );
+
+    // Verify no backup branch was created for branch_2 (rebase mode doesn't create backups)
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_2"),
+        "no backup branch should be created when forcing rebase"
+    );
+
+    // Verify branch_2 OID changed (it was rebased, not skipped)
+    let branch_2_oid_after = repo.revparse_single("branch_2").unwrap().id().to_string();
+    assert_ne!(
+        branch_2_oid_before, branch_2_oid_after,
+        "branch_2 should have been rebased (OID changed)"
+    );
+
+    // Verify state file was cleaned up
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful skip"
+    );
+
+    // Verify repo is in clean state
+    assert_eq!(repo.state(), RepositoryState::Clean);
+
+    teardown_git_repo(repo_name);
+}
