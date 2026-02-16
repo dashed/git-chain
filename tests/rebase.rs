@@ -5079,3 +5079,580 @@ fn rebase_skip_squash_merge_rebase_mode() {
 
     teardown_git_repo(repo_name);
 }
+
+// =============================================================================
+// Test #41: M1 — Step mode + squash-merge detection in rebase()
+// =============================================================================
+//
+// Verifies that when `--step` is combined with squash-merge detection (default Reset mode),
+// the squash-merge Reset does NOT count as a rebase operation, so the next branch gets
+// rebased in the same step. This means one `--step` invocation processes both the
+// squash-merge Reset AND one subsequent normal rebase.
+//
+// Setup: master → branch_1 → branch_2 → branch_3
+//   - Squash-merge branch_1 into master
+//   - Run `git chain rebase --step`
+//   - branch_1 detected as squash-merged → Reset (backup + git reset --hard)
+//   - branch_2 gets normal rebase (counts as 1 operation) → loop breaks
+//   - branch_3 NOT processed yet
+//
+#[test]
+fn rebase_step_squash_merge() {
+    let repo_name = "rebase_step_squash_merge";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Create branch_3 from branch_2
+    create_branch(&repo, "branch_3");
+    checkout_branch(&repo, "branch_3");
+    create_new_file(&path_to_repo, "file_3.txt", "branch 3 content");
+    commit_all(&repo, "add file_3.txt on branch_3");
+
+    // Set up chain: master → branch_1 → branch_2 → branch_3
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+    checkout_branch(&repo, "branch_3");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_2"]);
+
+    // Record branch_3 OID before rebase
+    let branch_3_oid_before = repo.revparse_single("branch_3").unwrap().id().to_string();
+
+    // Squash-merge branch_1 into master (simulates PR merge)
+    checkout_branch(&repo, "master");
+    let output = run_git_command(&path_to_repo, ["merge", "--squash", "branch_1"]);
+    assert!(output.status.success(), "git merge --squash should succeed");
+    commit_all(&repo, "squash merge branch_1 into master");
+
+    // Run rebase with --step (default squash-merge handling = Reset)
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--step"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STATUS: {}", output.status.success());
+
+    // Uncomment to stop test execution and debug
+    // assert!(false, "DEBUG STOP: step squash-merge test");
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify squash-merge was detected for branch_1
+    assert!(
+        stdout.contains("squashed and merged"),
+        "should detect squash-merge for branch_1, got: {}",
+        stdout
+    );
+
+    // Verify backup was created for branch_1
+    assert!(
+        stdout.contains("backup-chain_name/branch_1"),
+        "should create backup for branch_1, got: {}",
+        stdout
+    );
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch for branch_1 should exist"
+    );
+
+    // Verify "Performed one rebase" message (step mode completed one actual rebase)
+    assert!(
+        stdout.contains("Performed one rebase"),
+        "should show 'Performed one rebase' message, got: {}",
+        stdout
+    );
+
+    // Verify branch_3 was NOT processed yet (step mode only does one rebase)
+    let branch_3_oid_after = repo.revparse_single("branch_3").unwrap().id().to_string();
+    assert_eq!(
+        branch_3_oid_before, branch_3_oid_after,
+        "branch_3 should NOT have been rebased yet (step mode)"
+    );
+
+    // Verify no state file exists (step mode doesn't create state files)
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        !state_file.exists(),
+        "step mode should not create a state file"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #42: M3 — Step mode + ignore-root in rebase()
+// =============================================================================
+//
+// Verifies that when `--step` is combined with `--ignore-root`, the first branch
+// in the chain is skipped (not rebased against root), and the second branch gets
+// rebased as the single step operation.
+//
+// Setup: master → branch_1 → branch_2
+//   - Add new commit on master to make branch_1 behind
+//   - Run `git chain rebase --step --ignore-root`
+//   - branch_1 skipped (ignore-root), branch_2 rebased onto branch_1
+//
+#[test]
+fn rebase_step_ignore_root() {
+    let repo_name = "rebase_step_ignore_root";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Create branch_3 from branch_2
+    create_branch(&repo, "branch_3");
+    checkout_branch(&repo, "branch_3");
+    create_new_file(&path_to_repo, "file_3.txt", "branch 3 content");
+    commit_all(&repo, "add file_3.txt on branch_3");
+
+    // Set up chain: master → branch_1 → branch_2 → branch_3
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+    checkout_branch(&repo, "branch_3");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_2"]);
+
+    // Add a new commit on master to make branch_1 behind
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_new.txt", "new master content");
+    commit_all(&repo, "add master_new.txt on master");
+
+    // Add a new commit on branch_1 AFTER branch_2 was created so branch_2 needs rebasing
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "branch_1_extra.txt", "extra content");
+    commit_all(&repo, "add extra commit on branch_1");
+
+    // Record OIDs before rebase
+    let branch_1_oid_before = repo.revparse_single("branch_1").unwrap().id().to_string();
+    let branch_3_oid_before = repo.revparse_single("branch_3").unwrap().id().to_string();
+
+    // Run rebase with --step --ignore-root
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--step", "--ignore-root"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STATUS: {}", output.status.success());
+
+    // Uncomment to stop test execution and debug
+    // assert!(false, "DEBUG STOP: step ignore-root test");
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify branch_1 was skipped due to ignore-root
+    assert!(
+        stdout.contains("Not rebasing branch"),
+        "should show skip message for branch_1 due to ignore-root, got: {}",
+        stdout
+    );
+
+    // Verify "Performed one rebase" message (step mode: branch_1 skipped, branch_2 rebased, branch_3 remaining)
+    assert!(
+        stdout.contains("Performed one rebase"),
+        "should show 'Performed one rebase' message, got: {}",
+        stdout
+    );
+
+    // Verify branch_1 was NOT rebased (ignore-root)
+    let branch_1_oid_after = repo.revparse_single("branch_1").unwrap().id().to_string();
+    assert_eq!(
+        branch_1_oid_before, branch_1_oid_after,
+        "branch_1 should NOT have been rebased (ignore-root)"
+    );
+
+    // Verify branch_3 was NOT processed yet (step mode only does one rebase)
+    let branch_3_oid_after = repo.revparse_single("branch_3").unwrap().id().to_string();
+    assert_eq!(
+        branch_3_oid_before, branch_3_oid_after,
+        "branch_3 should NOT have been rebased yet (step mode)"
+    );
+
+    // Verify no state file exists (step mode doesn't create state files)
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        !state_file.exists(),
+        "step mode should not create a state file"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #43: M5 — git rebase still in progress during continue
+// =============================================================================
+//
+// Verifies that `git chain rebase --continue` returns an error when the user
+// hasn't completed the git-level rebase first (conflicts not resolved,
+// `git rebase --continue` not yet run).
+//
+// Setup: master → branch_1, create conflict, rebase → conflict
+//   - DON'T resolve the git rebase
+//   - Run `git chain rebase --continue`
+//   - Should get error: "A git rebase is still in progress"
+//
+#[test]
+fn rebase_continue_git_rebase_in_progress() {
+    let repo_name = "rebase_continue_git_rebase_in_progress";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+    commit_all(&repo, "add conflict.txt on branch_1");
+
+    // Set up chain: master → branch_1
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+
+    // Add conflicting commit on master
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "add conflict.txt on master");
+
+    // Run rebase — this will fail with conflict
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stdout.contains("Unable to completely rebase")
+            || stderr.contains("Unable to completely rebase"),
+        "rebase should report conflict, stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Verify git rebase is still in progress (repo state is NOT Clean)
+    assert_ne!(
+        repo.state(),
+        RepositoryState::Clean,
+        "repo should be in rebase state"
+    );
+
+    // Verify state file exists (chain rebase state was created)
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should exist after conflict"
+    );
+
+    // NOW try to continue WITHOUT resolving the git rebase first
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase", "--continue"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+    println!("STATUS: {}", output.status.success());
+
+    // Uncomment to stop test execution and debug
+    // assert!(false, "DEBUG STOP: git rebase in progress test");
+    // assert!(false, "stdout: {}", stdout);
+    // assert!(false, "stderr: {}", stderr);
+
+    // Verify error message about git rebase still in progress
+    assert!(
+        stdout.contains("git rebase is still in progress")
+            || stderr.contains("git rebase is still in progress"),
+        "should get error about git rebase still in progress, stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Verify state file is preserved (so user can retry after resolving)
+    assert!(
+        state_file.exists(),
+        "chain rebase state file should be preserved after error"
+    );
+
+    // Clean up by aborting the git rebase
+    run_git_command(&path_to_repo, ["rebase", "--abort"]);
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #44: M7 — Cleanup backups after skip
+// =============================================================================
+//
+// Verifies that `git chain rebase --skip --cleanup-backups` deletes backup
+// branches after skipping the conflicted branch and completing the remaining
+// branches.
+//
+// Setup: master → branch_1 → branch_2
+//   - Create backup branches via `git chain backup`
+//   - Create conflict on branch_1
+//   - Run rebase → conflict
+//   - Run `git chain rebase --skip --cleanup-backups`
+//   - Backup branches should be deleted
+//
+#[test]
+fn rebase_skip_cleanup_backups() {
+    let repo_name = "rebase_skip_cleanup_backups";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Set up chain: master → branch_1 → branch_2
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+
+    // Create backup branches via `git chain backup`
+    run_test_bin_expect_ok(&path_to_repo, ["backup"]);
+
+    // Verify backups exist
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch for branch_1 should exist after backup command"
+    );
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_2"),
+        "backup branch for branch_2 should exist after backup command"
+    );
+
+    // Add conflicting commit on master
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "add conflict.txt on master");
+
+    // Add conflicting file on branch_1
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "conflict.txt", "branch 1 conflict content");
+    commit_all(&repo, "add conflict.txt on branch_1");
+
+    // Run rebase → conflict on branch_1
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stdout.contains("Unable to completely rebase")
+            || stderr.contains("Unable to completely rebase"),
+        "rebase should report conflict, stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Run skip with cleanup-backups
+    // First abort the git-level rebase (skip does this automatically)
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--skip", "--cleanup-backups"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STATUS: {}", output.status.success());
+
+    // Uncomment to stop test execution and debug
+    // assert!(false, "DEBUG STOP: skip cleanup backups");
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify skip message for branch_1
+    assert!(
+        stdout.contains("Skipping branch branch_1"),
+        "should show skip message for branch_1, got: {}",
+        stdout
+    );
+
+    // Verify cleanup message
+    assert!(
+        stdout.contains("Cleaning up backup branches"),
+        "should show cleanup message, got: {}",
+        stdout
+    );
+
+    // Verify backup branches were deleted
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup branch for branch_1 should be deleted after cleanup"
+    );
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_2"),
+        "backup branch for branch_2 should be deleted after cleanup"
+    );
+
+    // Verify state file was cleaned up
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful skip"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #45: M8 — Progress reporting during continue and skip
+// =============================================================================
+//
+// Verifies that progress indicators like "[2/3]" and "[3/3]" are shown when
+// processing remaining branches during `--continue` and `--skip`.
+//
+// Setup: master → branch_1 → branch_2 → branch_3
+//   - Create conflict on branch_1
+//   - Run rebase → conflict on branch_1
+//   - Resolve + `git rebase --continue`
+//   - Run `git chain rebase --continue`
+//   - Should show progress "[2/3]" and "[3/3]" for remaining branches
+//
+#[test]
+fn rebase_continue_skip_progress_reporting() {
+    let repo_name = "rebase_continue_skip_progress_reporting";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Create branch_3 from branch_2
+    create_branch(&repo, "branch_3");
+    checkout_branch(&repo, "branch_3");
+    create_new_file(&path_to_repo, "file_3.txt", "branch 3 content");
+    commit_all(&repo, "add file_3.txt on branch_3");
+
+    // Set up chain: master → branch_1 → branch_2 → branch_3
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+    checkout_branch(&repo, "branch_3");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_2"]);
+
+    // Add conflicting commit on master
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "add conflict.txt on master");
+
+    // Add conflicting file on branch_1
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "conflict.txt", "branch 1 conflict content");
+    commit_all(&repo, "add conflict.txt on branch_1");
+
+    // Run rebase → conflict on branch_1
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stdout.contains("Unable to completely rebase")
+            || stderr.contains("Unable to completely rebase"),
+        "rebase should report conflict, stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Resolve the conflict
+    create_new_file(&path_to_repo, "conflict.txt", "resolved content");
+    run_git_command(&path_to_repo, ["add", "conflict.txt"]);
+    let git_continue = run_git_command(&path_to_repo, ["rebase", "--continue"]);
+    assert!(
+        git_continue.status.success(),
+        "git rebase --continue should succeed"
+    );
+
+    // Run git chain rebase --continue
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--continue"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STATUS: {}", output.status.success());
+
+    // Uncomment to stop test execution and debug
+    // assert!(false, "DEBUG STOP: progress reporting test");
+    // assert!(false, "stdout: {}", stdout);
+
+    // Verify progress indicators for remaining branches
+    assert!(
+        stdout.contains("[2/3]"),
+        "should show progress [2/3] for branch_2, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("[3/3]"),
+        "should show progress [3/3] for branch_3, got: {}",
+        stdout
+    );
+
+    // Verify summary report is shown
+    assert!(
+        stdout.contains("Rebase Summary"),
+        "should show rebase summary, got: {}",
+        stdout
+    );
+
+    // Verify state file was cleaned up
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        !state_file.exists(),
+        "chain rebase state file should be cleaned up after successful continue"
+    );
+
+    teardown_git_repo(repo_name);
+}
