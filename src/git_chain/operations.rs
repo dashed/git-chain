@@ -601,6 +601,11 @@ impl GitChain {
                             parent_name.bold()
                         );
 
+                        // Create backup before destructive reset
+                        self.create_backup_branch(&state.chain_name, &branch_name)?;
+                        let backup_name = format!("backup-{}/{}", state.chain_name, &branch_name);
+                        println!("📦 Created backup branch: {}", backup_name.bold());
+
                         let command = format!("git reset --hard {}", parent_name);
                         let output = Command::new("git")
                             .arg("reset")
@@ -910,6 +915,11 @@ impl GitChain {
                             parent_name.bold()
                         );
 
+                        // Create backup before destructive reset
+                        self.create_backup_branch(&state.chain_name, &branch_name)?;
+                        let backup_name = format!("backup-{}/{}", state.chain_name, &branch_name);
+                        println!("📦 Created backup branch: {}", backup_name.bold());
+
                         let command = format!("git reset --hard {}", parent_name);
                         let output = Command::new("git")
                             .arg("reset")
@@ -1120,6 +1130,15 @@ impl GitChain {
         } else {
             println!("Chain {} is already up-to-date.", state.chain_name.bold());
         }
+    }
+
+    /// Create a backup branch for a named branch in a chain.
+    fn create_backup_branch(&self, chain_name: &str, branch_name: &str) -> Result<(), Error> {
+        let (object, _reference) = self.repo.revparse_ext(branch_name)?;
+        let commit = self.repo.find_commit(object.id())?;
+        let backup_branch = format!("backup-{}/{}", chain_name, branch_name);
+        self.repo.branch(&backup_branch, &commit, true)?;
+        Ok(())
     }
 
     /// Delete backup branches for a chain after successful rebase.
