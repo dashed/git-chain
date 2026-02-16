@@ -5656,3 +5656,612 @@ fn rebase_continue_skip_progress_reporting() {
 
     teardown_git_repo(repo_name);
 }
+
+// =============================================================================
+// Test #46: L10 — Corrupted state file
+// =============================================================================
+//
+// Verifies that `git chain rebase --continue` returns a clear error when
+// the state file contains invalid JSON.
+//
+// Setup: master → branch_1 → branch_2, conflict on branch_1
+//   - Resolve git rebase, then overwrite state file with garbage
+//   - Run `git chain rebase --continue` → parse error
+//
+#[test]
+fn rebase_continue_corrupted_state_file() {
+    let repo_name = "rebase_continue_corrupted_state_file";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+    commit_all(&repo, "add conflict.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Set up chain: master → branch_1 → branch_2
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+
+    // Add conflicting commit on master
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "add conflict.txt on master");
+
+    // Run rebase → conflict on branch_1
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("Unable to completely rebase"),
+        "rebase should report conflict, stderr: {}",
+        stderr
+    );
+
+    // Resolve the git rebase conflict
+    create_new_file(&path_to_repo, "conflict.txt", "resolved content");
+    run_git_command(&path_to_repo, ["add", "conflict.txt"]);
+    let git_continue = run_git_command(&path_to_repo, ["rebase", "--continue"]);
+    assert!(
+        git_continue.status.success(),
+        "git rebase --continue should succeed"
+    );
+
+    // Verify state file exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        state_file.exists(),
+        "state file should exist after conflict"
+    );
+
+    // Corrupt the state file with invalid JSON
+    std::fs::write(&state_file, "THIS IS NOT VALID JSON {{{{").unwrap();
+
+    // Try to continue with corrupted state file
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase", "--continue"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+    println!("STATUS: {}", output.status.success());
+
+    // Verify error mentions parsing failure
+    assert!(
+        stderr.contains("Failed to parse") || stderr.contains("chain rebase state"),
+        "should get error about parsing state file, stdout: {}, stderr: {}",
+        stdout,
+        stderr
+    );
+
+    // Clean up the corrupted state file
+    std::fs::remove_file(&state_file).ok();
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #47: L17 — Chain with single branch
+// =============================================================================
+//
+// Verifies that rebase works correctly with a chain containing only one branch.
+//
+// Setup: master → branch_1 (single branch)
+//   - Add new commit on master
+//   - Rebase → branch_1 rebased
+//   - Second run → "already up-to-date"
+//
+#[test]
+fn rebase_single_branch_chain() {
+    let repo_name = "rebase_single_branch_chain";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Set up chain: master → branch_1
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+
+    // Add new commit on master so branch_1 needs rebasing
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_new.txt", "new master content");
+    commit_all(&repo, "add master_new.txt on master");
+
+    // Record branch_1 OID before rebase
+    let branch_1_oid_before = repo.revparse_single("branch_1").unwrap().id().to_string();
+
+    // Run rebase
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+
+    // Verify rebase succeeded
+    assert!(
+        stdout.contains("Successfully rebased chain"),
+        "should show success message, got: {}",
+        stdout
+    );
+
+    // Verify branch_1 OID changed (was rebased)
+    let branch_1_oid_after = repo.revparse_single("branch_1").unwrap().id().to_string();
+    assert_ne!(
+        branch_1_oid_before, branch_1_oid_after,
+        "branch_1 should have been rebased (OID changed)"
+    );
+
+    // Verify progress shows [1/1]
+    assert!(
+        stdout.contains("[1/1]"),
+        "should show progress [1/1] for single branch, got: {}",
+        stdout
+    );
+
+    // Run rebase again — should be up-to-date
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(
+        stdout.contains("already up-to-date"),
+        "second run should show 'already up-to-date', got: {}",
+        stdout
+    );
+
+    // Verify no state file
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        !state_file.exists(),
+        "state file should not exist after successful rebase"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #48: L12 — Cleanup with no backups existing
+// =============================================================================
+//
+// Verifies that `--cleanup-backups` handles gracefully when no backup branches
+// exist (no-op cleanup, no errors).
+//
+// Setup: master → branch_1 → branch_2
+//   - No backup branches created
+//   - Add commit on master, run rebase with --cleanup-backups
+//   - Rebase succeeds, no cleanup messages
+//
+#[test]
+fn rebase_cleanup_no_backups_exist() {
+    let repo_name = "rebase_cleanup_no_backups_exist";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Set up chain: master → branch_1 → branch_2
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+
+    // Add new commit on master so branches need rebasing
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_new.txt", "new master content");
+    commit_all(&repo, "add master_new.txt on master");
+
+    // Verify no backup branches exist
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_1"),
+        "no backup should exist before rebase"
+    );
+
+    // Run rebase with --cleanup-backups (no backups to clean)
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--cleanup-backups"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+
+    // Verify rebase succeeded
+    assert!(
+        stdout.contains("Successfully rebased chain"),
+        "should show success message, got: {}",
+        stdout
+    );
+
+    // Verify NO cleanup messages (no backups to clean)
+    assert!(
+        !stdout.contains("Cleaning up backup branches"),
+        "should NOT show cleanup message when no backups exist, got: {}",
+        stdout
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #49: L9 — Deleted branch during skip
+// =============================================================================
+//
+// Verifies that `git chain rebase --skip` handles a pending branch that was
+// deleted from git while the rebase was in progress.
+//
+// Setup: master → branch_1 → branch_2 → branch_3
+//   - Create conflict on branch_1, rebase → conflict
+//   - Delete branch_3 from git (pending in state)
+//   - Run `git chain rebase --skip`
+//   - branch_1 skipped, branch_3 detected as deleted, branch_2 rebased
+//
+#[test]
+fn rebase_skip_deleted_pending_branch() {
+    let repo_name = "rebase_skip_deleted_pending_branch";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Create branch_3 from branch_2
+    create_branch(&repo, "branch_3");
+    checkout_branch(&repo, "branch_3");
+    create_new_file(&path_to_repo, "file_3.txt", "branch 3 content");
+    commit_all(&repo, "add file_3.txt on branch_3");
+
+    // Set up chain: master → branch_1 → branch_2 → branch_3
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+    checkout_branch(&repo, "branch_3");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_2"]);
+
+    // Add conflicting commit on master
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "add conflict.txt on master");
+
+    // Add conflicting file on branch_1
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "conflict.txt", "branch 1 conflict content");
+    commit_all(&repo, "add conflict.txt on branch_1");
+
+    // Run rebase → conflict on branch_1
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("Unable to completely rebase"),
+        "rebase should report conflict, stderr: {}",
+        stderr
+    );
+
+    // Delete branch_3 while rebase is in progress (it's pending in state)
+    run_git_command(&path_to_repo, ["branch", "-D", "branch_3"]);
+    assert!(
+        !branch_exists(&repo, "branch_3"),
+        "branch_3 should be deleted"
+    );
+
+    // Run skip — branch_1 skipped, branch_3 detected as deleted
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--skip"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+
+    // Verify branch_1 was skipped
+    assert!(
+        stdout.contains("Skipping branch branch_1"),
+        "should show skip message for branch_1, got: {}",
+        stdout
+    );
+
+    // Verify branch_3 was detected as no longer existing
+    assert!(
+        stdout.contains("no longer exists"),
+        "should warn that branch_3 no longer exists, got: {}",
+        stdout
+    );
+
+    // Verify branch_2 was rebased
+    assert!(
+        stdout.contains("Rebasing branch_2"),
+        "should rebase branch_2, got: {}",
+        stdout
+    );
+
+    // Verify summary shows both skipped branches
+    assert!(
+        stdout.contains("Skipped: 2"),
+        "summary should show 2 skipped branches (branch_1 + branch_3), got: {}",
+        stdout
+    );
+
+    // Verify state file was cleaned up
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(
+        !state_file.exists(),
+        "state file should be cleaned up after successful skip"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #50: L16 — Abort on different branch than original
+// =============================================================================
+//
+// Verifies that `git chain rebase --abort` restores branches and switches
+// back to the original branch even when called from a different branch.
+//
+// Setup: master → branch_1 → branch_2
+//   - Start rebase from branch_1, conflict on branch_1
+//   - Abort git rebase (git rebase --abort), checkout master
+//   - Run `git chain rebase --abort` from master
+//   - Should restore all branches and switch back to branch_1
+//
+#[test]
+fn rebase_abort_from_different_branch() {
+    let repo_name = "rebase_abort_from_different_branch";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "conflict.txt", "branch 1 content");
+    commit_all(&repo, "add conflict.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Set up chain: master → branch_1 → branch_2
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+
+    // Record original OIDs
+    let branch_1_oid_before = repo.revparse_single("branch_1").unwrap().id().to_string();
+    let branch_2_oid_before = repo.revparse_single("branch_2").unwrap().id().to_string();
+
+    // Add conflicting commit on master
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "conflict.txt", "master content");
+    commit_all(&repo, "add conflict.txt on master");
+
+    // Run rebase from branch_1 → conflict
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_expect_err(&path_to_repo, ["rebase"]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("Unable to completely rebase"),
+        "rebase should report conflict, stderr: {}",
+        stderr
+    );
+
+    // Abort git rebase externally (NOT git chain rebase --abort)
+    run_git_command(&path_to_repo, ["rebase", "--abort"]);
+    assert_eq!(
+        repo.state(),
+        RepositoryState::Clean,
+        "repo should be clean after git rebase --abort"
+    );
+
+    // Switch to master (a different branch than original_branch which is branch_1)
+    checkout_branch(&repo, "master");
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // Verify state file still exists
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    assert!(state_file.exists(), "state file should still exist");
+
+    // Run git chain rebase --abort from master
+    let output = run_test_bin_expect_ok(&path_to_repo, ["rebase", "--abort"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+
+    // Verify abort message
+    assert!(
+        stdout.contains("Aborted chain rebase"),
+        "should show abort message, got: {}",
+        stdout
+    );
+
+    // Verify switching back to original branch (branch_1, NOT master)
+    assert!(
+        stdout.contains("Switching back to branch: branch_1"),
+        "should switch back to branch_1 (original branch), got: {}",
+        stdout
+    );
+
+    // Verify current branch is branch_1
+    assert_eq!(
+        &get_current_branch_name(&repo),
+        "branch_1",
+        "should be on branch_1 after abort (original branch)"
+    );
+
+    // Verify branches are restored to original OIDs
+    let branch_1_oid_after = repo.revparse_single("branch_1").unwrap().id().to_string();
+    let branch_2_oid_after = repo.revparse_single("branch_2").unwrap().id().to_string();
+    assert_eq!(
+        branch_1_oid_before, branch_1_oid_after,
+        "branch_1 should be restored to original OID"
+    );
+    assert_eq!(
+        branch_2_oid_before, branch_2_oid_after,
+        "branch_2 should be restored to original OID"
+    );
+
+    // Verify state file cleaned up
+    assert!(
+        !state_file.exists(),
+        "state file should be cleaned up after abort"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// =============================================================================
+// Test #51: L13 — Cleanup with partial backups
+// =============================================================================
+//
+// Verifies that `--cleanup-backups` correctly handles the case where only
+// some branches have backup branches (partial backups).
+//
+// Setup: master → branch_1 → branch_2
+//   - Manually create backup for only branch_1
+//   - Run rebase with --cleanup-backups
+//   - Only branch_1 backup deleted, no error for branch_2 (no backup)
+//
+#[test]
+fn rebase_cleanup_partial_backups() {
+    let repo_name = "rebase_cleanup_partial_backups";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // Initial commit on master
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    // Create branch_1 from master
+    create_branch(&repo, "branch_1");
+    checkout_branch(&repo, "branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "branch 1 content");
+    commit_all(&repo, "add file_1.txt on branch_1");
+
+    // Create branch_2 from branch_1
+    create_branch(&repo, "branch_2");
+    checkout_branch(&repo, "branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "branch 2 content");
+    commit_all(&repo, "add file_2.txt on branch_2");
+
+    // Set up chain: master → branch_1 → branch_2
+    checkout_branch(&repo, "branch_1");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "master"]);
+    checkout_branch(&repo, "branch_2");
+    run_test_bin_expect_ok(&path_to_repo, ["init", "chain_name", "branch_1"]);
+
+    // Create backup for ONLY branch_1 (not branch_2)
+    run_git_command(
+        &path_to_repo,
+        ["branch", "backup-chain_name/branch_1", "branch_1"],
+    );
+    assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup for branch_1 should exist"
+    );
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_2"),
+        "backup for branch_2 should NOT exist"
+    );
+
+    // Add new commit on master so branches need rebasing
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_new.txt", "new master content");
+    commit_all(&repo, "add master_new.txt on master");
+
+    // Run rebase with --cleanup-backups
+    checkout_branch(&repo, "branch_1");
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--cleanup-backups"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+
+    // Verify rebase succeeded
+    assert!(
+        stdout.contains("Successfully rebased chain"),
+        "should show success message, got: {}",
+        stdout
+    );
+
+    // Verify cleanup message for branch_1 backup
+    assert!(
+        stdout.contains("Cleaning up backup branches"),
+        "should show cleanup message, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("backup-chain_name/branch_1"),
+        "should mention deleted backup for branch_1, got: {}",
+        stdout
+    );
+
+    // Verify branch_1 backup was deleted
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_1"),
+        "backup for branch_1 should be deleted after cleanup"
+    );
+
+    // Verify no error about branch_2 backup (git rebase writes to stderr, so we only
+    // check that there's no "Failed to delete" error message)
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        !stderr.contains("Failed to delete"),
+        "should NOT have errors about deleting backups, got: {}",
+        stderr
+    );
+
+    teardown_git_repo(repo_name);
+}
