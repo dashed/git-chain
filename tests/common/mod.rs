@@ -226,6 +226,11 @@ where
     assert_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME"))
         .expect("Failed to get git-chain")
         .current_dir(current_dir_buf)
+        // Ensure any `git` subprocess spawned by git-chain runs non-interactively.
+        // Without this, `git rebase --continue` (merge backend, git >= 2.26) tries
+        // to open an editor and fails on CI with "Terminal is dumb, but EDITOR unset".
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
         .args(arguments)
         .output()
         .expect("Failed to run git-chain")
@@ -252,6 +257,10 @@ where
         assert_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to get git-chain");
 
     cmd.current_dir(current_dir_buf)
+        // Non-interactive git defaults (see run_test_bin); caller-supplied
+        // env_vars are applied afterwards and therefore take precedence.
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
         .args(arguments)
         .envs(env_vars);
 
@@ -313,6 +322,12 @@ where
 
     let output = assert_cmd::Command::from_std(Command::new("git"))
         .current_dir(current_dir_buf)
+        // Run git non-interactively so commands like `git rebase --continue`
+        // (merge backend, git >= 2.26) reuse the existing commit message instead
+        // of launching an editor, which fails on CI ("Terminal is dumb, but
+        // EDITOR unset"). Mirrors git's own test harness (GIT_EDITOR=:).
+        .env("GIT_EDITOR", "true")
+        .env("GIT_SEQUENCE_EDITOR", "true")
         .args(arguments)
         .output()
         .expect("Failed to run git");
