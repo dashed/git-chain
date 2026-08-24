@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process;
 
 use colored::*;
@@ -117,8 +119,81 @@ impl GitChain {
         }
     }
 
+    /// If `branch_name` is checked out in a worktree other than the current
+    /// one, return the path of that worktree.
+    ///
+    /// Mirrors libgit2's `git_branch_is_checked_out` (not exposed by git2-rs):
+    /// inspect the HEAD file of every worktree attached to this repository.
+    /// Reading HEAD directly also covers worktrees whose directory is missing
+    /// but which are still registered, since they would still block `set_head`.
+    fn branch_checked_out_in_other_worktree(
+        &self,
+        branch_name: &str,
+    ) -> Result<Option<PathBuf>, Error> {
+        let target_head = format!("ref: refs/heads/{}", branch_name);
+        let own_git_dir =
+            fs::canonicalize(self.repo.path()).unwrap_or_else(|_| self.repo.path().to_path_buf());
+        let common_dir = self.repo.commondir().to_path_buf();
+
+        // (git dir to inspect, path of the worktree to report)
+        let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+        // The main worktree. Relevant when running from a linked worktree.
+        let main_worktree_path = common_dir
+            .parent()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| common_dir.clone());
+        candidates.push((common_dir.clone(), main_worktree_path));
+
+        // All linked worktrees.
+        for worktree_name in self.repo.worktrees()?.iter().flatten() {
+            let git_dir = common_dir.join("worktrees").join(worktree_name);
+            let worktree_path = self
+                .repo
+                .find_worktree(worktree_name)
+                .map(|worktree| worktree.path().to_path_buf())
+                .unwrap_or_else(|_| git_dir.clone());
+            candidates.push((git_dir, worktree_path));
+        }
+
+        for (git_dir, worktree_path) in candidates {
+            let canonical_git_dir = fs::canonicalize(&git_dir).unwrap_or_else(|_| git_dir.clone());
+            if canonical_git_dir == own_git_dir {
+                // The current worktree may freely hold the branch.
+                continue;
+            }
+            if let Ok(head_contents) = fs::read_to_string(git_dir.join("HEAD")) {
+                if head_contents.trim_end() == target_head {
+                    return Ok(Some(worktree_path));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn checkout_branch(&self, branch_name: &str) -> Result<(), Error> {
         let (object, reference) = self.repo.revparse_ext(branch_name)?;
+
+        // Refuse before touching the working tree if the branch is held by
+        // another worktree — set_head() below would fail, and having run
+        // checkout_tree() first would leave the working tree mutated with HEAD
+        // unmoved, which looks like a pile of spurious local changes.
+        if let Some(ref target_reference) = reference {
+            if target_reference.is_branch() {
+                if let Some(worktree_path) =
+                    self.branch_checked_out_in_other_worktree(branch_name)?
+                {
+                    return Err(Error::from_str(&format!(
+                        "Cannot check out branch '{}': it is checked out in another worktree at '{}'.\n\
+                         Remove that worktree (git worktree remove <path>), or prune stale worktrees \
+                         (git worktree prune), then retry.",
+                        branch_name,
+                        worktree_path.display()
+                    )));
+                }
+            }
+        }
 
         // set working directory
         self.repo.checkout_tree(&object, None)?;
@@ -130,7 +205,13 @@ impl GitChain {
             // this is a commit, not a reference
             None => self.repo.set_head_detached(object.id()),
         }
-        .unwrap_or_else(|_| panic!("Failed to set HEAD to branch {}", branch_name));
+        .map_err(|err| {
+            Error::from_str(&format!(
+                "Failed to set HEAD to branch {}: {}",
+                branch_name,
+                err.message()
+            ))
+        })?;
 
         Ok(())
     }
