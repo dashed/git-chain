@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-08-24
+
+### Added
+- `rebase --quit`: discard a corrupt or abandoned chain-rebase state without touching any branch
+- `rebase --no-fork-point`: compute merge bases without consulting reflogs (persists across `--continue`/`--skip`)
+
 ### Changed
 - `git chain rebase` now skips commits that are already applied upstream, like plain `git rebase` does (previously the invocation suppressed git's patch-id detection, turning routine cherry-pick-down-then-refine workflows into spurious merge conflicts). Note this also means a commit whose patch the parent applied and later reverted is dropped, matching `git rebase`; git prints `skipped previously applied commit` when this happens, and the `backup-<chain>/*` branches (now correctly preserved) are the recovery path
 - Chain rebase reliability overhaul from the rebase subsystem audit (REBASE_AUDIT.md): state survives failed rebase subprocesses with recovery advice, `--continue` retries a failed branch, `--abort` never touches branches it did not manage (and resets the working tree it owns), `--cleanup-backups` deletes only backups the run created, new `rebase --quit` escape hatch for corrupt state, worktree collisions are detected before any work starts, `--step` refuses to run during a paused chain rebase, and chain rebases are isolated from `rebase.updateRefs`
@@ -145,7 +151,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.9] - (Previous version)
 
-[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.14...HEAD
+[unreleased]: https://github.com/dashed/git-chain/compare/v0.0.15...HEAD
+[0.0.15]: https://github.com/dashed/git-chain/compare/v0.0.14...v0.0.15
 [0.0.14]: https://github.com/dashed/git-chain/compare/v0.0.13...v0.0.14
 [0.0.13]: https://github.com/dashed/git-chain/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/dashed/git-chain/compare/v0.0.11...v0.0.12
