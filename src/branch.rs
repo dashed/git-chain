@@ -5,7 +5,7 @@ use std::process::Command;
 use between::Between;
 use colored::*;
 use git2::{BranchType, Error, ErrorCode};
-use rand::Rng;
+use rand::RngExt;
 
 use crate::types::*;
 use crate::{Chain, GitChain};
@@ -32,13 +32,13 @@ fn generate_chain_order() -> String {
     // Use character that is not either between.low() or between.high().
     // This guarantees that the next generated string sorts before or after the string generated in this function.
     let character_range = 1..=(last_chars_index - 1);
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     let mut len = 5;
     let mut str: Vec<char> = vec![];
 
     while len >= 1 {
-        let index: usize = rng.gen_range(character_range.clone());
+        let index: usize = rng.random_range(character_range.clone());
         let character_candidate = *chars.get(index).unwrap();
         str.push(character_candidate);
         len -= 1;
