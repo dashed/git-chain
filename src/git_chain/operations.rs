@@ -276,17 +276,27 @@ impl GitChain {
                     if !output.status.success() {
                         io::stdout().write_all(&output.stdout).unwrap();
                         io::stderr().write_all(&output.stderr).unwrap();
-                        if !step_rebase {
-                            self.update_branch_state(index, BranchRebaseStatus::Failed)?;
-                            let _ = delete_state(&self.repo);
-                        }
-                        let _ = self.checkout_branch(&orig_branch);
-                        return Err(Error::git_command_failed(
+
+                        let mut message = Error::git_command_failed(
                             command,
                             output.status.code().unwrap_or(1),
                             String::from_utf8_lossy(&output.stdout).to_string(),
                             String::from_utf8_lossy(&output.stderr).to_string(),
-                        ));
+                        )
+                        .message()
+                        .to_string();
+
+                        // The state file holds the only record of the pre-rebase OIDs, and
+                        // earlier branches of the chain have already been rewritten. Keep it,
+                        // as git keeps its own rebase state on failure.
+                        if !step_rebase {
+                            self.update_branch_state(index, BranchRebaseStatus::Failed)?;
+                            message.push_str("\n\n");
+                            message.push_str(&self.rebase_failure_advice());
+                        }
+
+                        let _ = self.checkout_branch(&orig_branch);
+                        return Err(Error::from_str(&message));
                     }
                     io::stdout().write_all(&output.stdout).unwrap();
                     io::stderr().write_all(&output.stderr).unwrap();
@@ -383,6 +393,20 @@ impl GitChain {
         Ok(())
     }
 
+    /// Advice appended to a chain-rebase failure whose repository state stayed clean
+    /// (a refusing hook, a branch checked out in another worktree, ENOSPC, ...).
+    ///
+    /// The chain-rebase state is deliberately kept in that case — it is the only record
+    /// of the pre-rebase OIDs of the branches already rewritten — so `--abort` can still
+    /// put every branch back.
+    fn rebase_failure_advice(&self) -> String {
+        format!(
+            "Chain rebase state saved. Run '{} rebase --abort' to restore all branches to \
+             their original state.",
+            self.executable_name
+        )
+    }
+
     /// Helper to update a branch's status in the persisted state file.
     fn update_branch_state(
         &self,
@@ -448,7 +472,27 @@ impl GitChain {
         // 4. Load state
         let mut state = read_state(&self.repo)?;
 
-        // 5. Find branch with Conflict status and mark as Completed
+        // 5. Put a branch left `Failed` back in the queue.
+        //
+        // A `Failed` branch was never moved: the repository stayed clean and no git rebase is
+        // in progress, so re-attempting it from its frozen merge base is exactly what a fresh
+        // run would do. Resuming *past* it would replant its children onto its stale tip and
+        // report success for a chain that is no longer internally consistent.
+        let failed_index = state
+            .branches
+            .iter()
+            .position(|b| b.status == BranchRebaseStatus::Failed);
+
+        let retried_branch = match failed_index {
+            Some(idx) => {
+                state.branches[idx].status = BranchRebaseStatus::Pending;
+                write_state(&self.repo, &state)?;
+                Some(state.branches[idx].name.clone())
+            }
+            None => None,
+        };
+
+        // 6. Find branch with Conflict status and mark as Completed
         let conflict_index = state
             .branches
             .iter()
@@ -531,6 +575,12 @@ impl GitChain {
             }
         };
 
+        // The requeued branch must not be skipped over: resume at whichever comes first.
+        let resume_from = match failed_index {
+            Some(idx) => resume_from.min(idx),
+            None => resume_from,
+        };
+
         // Parse squashed_merge_handling from state
         let squashed_merge_handling = match state.options.squashed_merge_handling.as_str() {
             "skip" => SquashedRebaseHandling::Skip,
@@ -552,13 +602,20 @@ impl GitChain {
             }
         }
 
-        // 6. Resume the rebase loop from resume_from
+        // 7. Resume the rebase loop from resume_from
         let mut num_of_rebase_operations = 0;
 
         println!(
             "Continuing chain rebase for chain {}...",
             state.chain_name.bold()
         );
+
+        if let Some(branch_name) = &retried_branch {
+            println!(
+                "🔁 Retrying branch {}, which failed to rebase on the previous attempt.",
+                branch_name.bold()
+            );
+        }
 
         for i in resume_from..state.branches.len() {
             if state.branches[i].status != BranchRebaseStatus::Pending {
@@ -668,11 +725,14 @@ impl GitChain {
                     if !output.status.success() {
                         io::stdout().write_all(&output.stdout).unwrap();
                         io::stderr().write_all(&output.stderr).unwrap();
+                        // Keep the state file: it holds the only record of the pre-rebase
+                        // OIDs, and earlier branches have already been rewritten.
                         self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
-                        let _ = delete_state(&self.repo);
                         return Err(Error::from_str(&format!(
-                            "🛑 Rebase failed for branch {} onto {}",
-                            branch_name, parent_name
+                            "🛑 Rebase failed for branch {} onto {}\n\n{}",
+                            branch_name,
+                            parent_name,
+                            self.rebase_failure_advice()
                         )));
                     }
                     io::stdout().write_all(&output.stdout).unwrap();
@@ -984,11 +1044,14 @@ impl GitChain {
                     if !output.status.success() {
                         io::stdout().write_all(&output.stdout).unwrap();
                         io::stderr().write_all(&output.stderr).unwrap();
+                        // Keep the state file: it holds the only record of the pre-rebase
+                        // OIDs, and earlier branches have already been rewritten.
                         self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
-                        let _ = delete_state(&self.repo);
                         return Err(Error::from_str(&format!(
-                            "🛑 Rebase failed for branch {} onto {}",
-                            branch_name, parent_name
+                            "🛑 Rebase failed for branch {} onto {}\n\n{}",
+                            branch_name,
+                            parent_name,
+                            self.rebase_failure_advice()
                         )));
                     }
                     io::stdout().write_all(&output.stdout).unwrap();

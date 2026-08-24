@@ -1,26 +1,28 @@
 //! CHARACTERIZATION TESTS FOR KNOWN REBASE STATE-MACHINE DEFECTS
 //!
-//! ⚠️  THESE TESTS ASSERT BUGGY BEHAVIOR ON PURPOSE. ⚠️
+//! ⚠️  SOME OF THESE TESTS ASSERT BUGGY BEHAVIOR ON PURPOSE. ⚠️
 //!
 //! Every test in this file documents a defect recorded in `REBASE_AUDIT.md`
 //! (repository root), section 3 "State machine findings (failure recovery)".
-//! They are written to PASS against the current, defective implementation —
-//! passing here means "the bug is still present and reproducible", not "the
-//! code is correct".
+//! A test that is still *characterizing* is written to PASS against the
+//! defective implementation — passing there means "the bug is still present and
+//! reproducible", not "the code is correct".
 //!
 //! WHEN A FIX LANDS, THE CORRESPONDING TEST MUST BE INVERTED, not deleted.
 //! Each test carries an `AFTER THE FIX` block spelling out exactly which
 //! assertions have to flip so the test becomes a regression guard for the
 //! fixed behavior.
 //!
-//! Coverage:
+//! Coverage (status: **C1 is FIXED**, its test now guards the fix; H1, H2 and
+//! H3 still characterize their defects):
 //!
-//! | Test                                                  | Audit finding |
-//! |-------------------------------------------------------|---------------|
-//! | `audit_c1_rebase_failure_deletes_state_no_recovery`     | C1 · CRITICAL |
-//! | `audit_h2_abort_discards_work_on_untouched_branch`      | H2 · HIGH     |
-//! | `audit_h3_corrupt_state_wedges_all_recovery_commands`   | H3 · HIGH     |
-//! | `audit_h1_cleanup_backups_deletes_user_created_backups` | H1 · HIGH     |
+//! | Test                                                    | Audit finding | Status  |
+//! |---------------------------------------------------------|---------------|---------|
+//! | `audit_c1_rebase_failure_keeps_state_for_recovery`       | C1 · CRITICAL | FIXED   |
+//! | `audit_c1_continue_retries_the_failed_branch`            | C1 · CRITICAL | FIXED   |
+//! | `audit_h2_abort_discards_work_on_untouched_branch`       | H2 · HIGH     | defect  |
+//! | `audit_h3_corrupt_state_wedges_all_recovery_commands`    | H3 · HIGH     | defect  |
+//! | `audit_h1_cleanup_backups_deletes_user_created_backups`  | H1 · HIGH     | defect  |
 
 #[path = "common/mod.rs"]
 pub mod common;
@@ -45,6 +47,19 @@ fn rev_parse(path_to_repo: &Path, revision: &str) -> Option<String> {
     }
 
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// True when `ancestor` is an ancestor of `descendant` (`git merge-base --is-ancestor`).
+///
+/// Used to prove that a chain is internally consistent: every branch must contain its
+/// parent's tip.
+fn is_ancestor(path_to_repo: &Path, ancestor: &str, descendant: &str) -> bool {
+    run_git_command(
+        path_to_repo,
+        vec!["merge-base", "--is-ancestor", ancestor, descendant],
+    )
+    .status
+    .success()
 }
 
 /// True when `<revision>` names an object that exists (e.g. `branch:path/to/file`).
@@ -84,27 +99,23 @@ fn install_pre_rebase_hook_refusing(path_to_repo: &Path, branch_name: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// C1 · CRITICAL — the failure path DELETES the state file
+// C1 · CRITICAL (FIXED) — the failure path KEEPS the state file
 // ---------------------------------------------------------------------------
 
-/// Documents audit finding **C1**: when a `git rebase` subprocess fails while
-/// leaving the repository clean, `rebase()` marks the branch `Failed` and then
-/// calls `delete_state()` (`src/git_chain/operations.rs:278-279`) — *after*
-/// earlier branches have already been rewritten.
+/// Guards the fix for audit finding **C1**: when a `git rebase` subprocess fails
+/// while leaving the repository clean, `rebase()` marks the branch `Failed` and
+/// **keeps** the chain-rebase state, as git keeps its own rebase state on failure.
 ///
-/// `original_refs` lives only in that file, and no backup branches are taken on
-/// the normal (non-squash) path, so deleting it destroys the sole record of the
-/// pre-rebase positions. The chain is left half-rebased with no recovery path.
+/// `original_refs` lives only in that file, and no backup branches are taken on the
+/// normal (non-squash) path, so the file is the sole record of the pre-rebase
+/// positions of the branches already rewritten. This test walks the whole recovery
+/// path: the failure keeps the state and says so, `--status` reports the half-rebased
+/// chain, and `--abort` puts every branch back.
 ///
-/// AFTER THE FIX (keep state on `Failed`, per REBASE_AUDIT.md §4):
-///   - `state_file.exists()`         must flip to `true`
-///   - `--abort` must SUCCEED, print "Restoring branches", and move
-///     `some_branch_1` back to `branch_1_original`
-///   - `--status` must report the chain with `some_branch_2` marked Failed
-///     instead of "No chain rebase in progress."
+/// It fails if the failure path ever deletes the state again.
 #[cfg(unix)]
 #[test]
-fn audit_c1_rebase_failure_deletes_state_no_recovery() {
+fn audit_c1_rebase_failure_keeps_state_for_recovery() {
     let repo_name = "audit_c1_rebase_failure_deletes_state";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
@@ -183,6 +194,15 @@ fn audit_c1_rebase_failure_deletes_state_no_recovery() {
         branch_2_original != branch_2_after
     );
     println!("STATE FILE EXISTS AFTER FAILURE: {}", state_file.exists());
+    println!(
+        "output says the state was kept: {}",
+        rebase_text.contains("Chain rebase state saved")
+    );
+    println!(
+        "output points at rebase --abort: {}",
+        rebase_text.contains("rebase --abort")
+    );
+    println!("EXPECTED (C1 fixed): the state survives and the output advises --abort");
     println!("======");
 
     // Uncomment to stop test execution and debug this test case
@@ -217,65 +237,25 @@ fn audit_c1_rebase_failure_deletes_state_no_recovery() {
         branch_2_original, branch_2_after
     );
 
-    // DEFECT: the only record of the pre-rebase positions is now gone.
+    // The fix: the only record of the pre-rebase positions survives the failure.
     assert!(
-        !state_file.exists(),
-        "DEFECT C1 no longer reproduces: the state file survived the failure at {}. \
-         If the fix landed, invert this assertion (see AFTER THE FIX above).",
+        state_file.exists(),
+        "the chain rebase state should survive a failed rebase, but {} does not exist",
         state_file.display()
     );
-
-    // Consequence 1: --abort cannot restore anything.
-    let args: Vec<&str> = vec!["rebase", "--abort"];
-    let abort_output = run_test_bin_expect_err(&path_to_repo, args);
-    let abort_text = combined_output(&abort_output);
-
-    println!("=== C1 DIAGNOSTICS: recovery attempts ===");
-    println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
-    println!("ABORT OUTPUT: {}", abort_text);
-
     assert!(
-        !abort_output.status.success(),
-        "rebase --abort should fail because the state file was deleted, got output: {}",
-        abort_text
+        rebase_text.contains("Chain rebase state saved"),
+        "the failure output should tell the user the state was kept, got: {}",
+        rebase_text
     );
     assert!(
-        abort_text.contains("No chain rebase in progress"),
-        "rebase --abort should report that there is nothing to abort, got: {}",
-        abort_text
+        rebase_text.contains("rebase --abort"),
+        "the failure output should point at rebase --abort for recovery, got: {}",
+        rebase_text
     );
 
-    // Consequence 2: --status offers no recovery affordance either. Note that
-    // `rebase --status` exits 0 by design when no state exists
-    // (`operations.rs:1040-1043`); the defect is the *content* of the report,
-    // not the exit code.
-    let args: Vec<&str> = vec!["rebase", "--status"];
-    let status_output = run_test_bin_expect_ok(&path_to_repo, args);
-    let status_text = combined_output(&status_output);
-
-    println!("STATUS EXIT SUCCESS: {}", status_output.status.success());
-    println!("STATUS OUTPUT: {}", status_text);
-    println!("======");
-
-    assert!(
-        status_output.status.success(),
-        "rebase --status exits 0 when no state file exists, got output: {}",
-        status_text
-    );
-    assert!(
-        status_text.contains("No chain rebase in progress"),
-        "rebase --status should claim no rebase is in progress even though the chain \
-         is half-rebased, got: {}",
-        status_text
-    );
-    assert!(
-        !status_text.contains("some_branch_1"),
-        "rebase --status should not mention the half-rebased chain at all, got: {}",
-        status_text
-    );
-
-    // The pre-rebase original of some_branch_1 is now recorded nowhere that
-    // git-chain can reach: no state file, and no backup branch was ever made.
+    // The normal rebase path still takes no backups, so the surviving state file really is
+    // the only record of the pre-rebase positions — which is what makes keeping it critical.
     let backup_ref = rev_parse(&path_to_repo, "backup-chain_name/some_branch_1");
     println!("BACKUP REF FOR some_branch_1: {:?}", backup_ref);
     assert!(
@@ -283,6 +263,301 @@ fn audit_c1_rebase_failure_deletes_state_no_recovery() {
         "the normal rebase path takes no backups, so backup-chain_name/some_branch_1 \
          should not exist, but it resolved to {:?}",
         backup_ref
+    );
+
+    // Recovery step 1: --status reports the half-rebased chain instead of denying it.
+    let args: Vec<&str> = vec!["rebase", "--status"];
+    let status_output = run_test_bin_expect_ok(&path_to_repo, args);
+    let status_text = combined_output(&status_output);
+
+    println!("=== C1 DIAGNOSTICS: recovery ===");
+    println!("STATUS EXIT SUCCESS: {}", status_output.status.success());
+    println!("STATUS OUTPUT: {}", status_text);
+    println!(
+        "status names the failed branch: {}",
+        status_text.contains("some_branch_2")
+    );
+    println!("status marks it Failed: {}", status_text.contains("Failed"));
+
+    assert!(
+        status_output.status.success(),
+        "rebase --status should succeed, got output: {}",
+        status_text
+    );
+    assert!(
+        !status_text.contains("No chain rebase in progress"),
+        "rebase --status should not deny the half-rebased chain, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("some_branch_1"),
+        "rebase --status should report the rebased branch, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("some_branch_2"),
+        "rebase --status should report the failed branch, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("Failed"),
+        "rebase --status should mark some_branch_2 as Failed, got: {}",
+        status_text
+    );
+
+    // Recovery step 2: --abort puts every branch back and consumes the state.
+    let args: Vec<&str> = vec!["rebase", "--abort"];
+    let abort_output = run_test_bin_expect_ok(&path_to_repo, args);
+    let abort_text = combined_output(&abort_output);
+
+    let branch_1_restored = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_restored = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!(
+        "some_branch_1: original={} after abort={} (restored: {})",
+        branch_1_original,
+        branch_1_restored,
+        branch_1_original == branch_1_restored
+    );
+    println!(
+        "some_branch_2: original={} after abort={} (unchanged: {})",
+        branch_2_original,
+        branch_2_restored,
+        branch_2_original == branch_2_restored
+    );
+    println!("STATE FILE EXISTS AFTER ABORT: {}", state_file.exists());
+    println!("======");
+
+    // Uncomment to stop test execution and debug the recovery path
+    // assert!(false, "DEBUG STOP: C1 after --abort");
+    // assert!(false, "status output: {}", status_text);
+    // assert!(false, "abort output: {}", abort_text);
+    // assert!(false, "branch_1: {} -> {}", branch_1_original, branch_1_restored);
+
+    assert!(
+        abort_output.status.success(),
+        "rebase --abort should succeed now that the state survived, got output: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("Restoring branches"),
+        "rebase --abort should report restoring the branches, got: {}",
+        abort_text
+    );
+    assert_eq!(
+        branch_1_restored, branch_1_original,
+        "some_branch_1 should be restored to its pre-rebase commit {}, got {}",
+        branch_1_original, branch_1_restored
+    );
+    assert_eq!(
+        branch_2_restored, branch_2_original,
+        "some_branch_2 was never rebased and should still be at {}, got {}",
+        branch_2_original, branch_2_restored
+    );
+    assert!(
+        !state_file.exists(),
+        "the state file should be consumed by a successful --abort, but {} still exists",
+        state_file.display()
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// The other half of the C1 recovery contract: `--continue` RETRIES the failed branch.
+///
+/// Keeping the state on failure (C1) makes `rebase --continue` reachable after a `Failed`
+/// branch, so it has to do the right thing there. `Failed` means the branch was never moved —
+/// the repository stayed clean and no git rebase is in progress — so `--continue` puts it back
+/// in the queue and re-attempts it from its frozen merge base.
+///
+/// Resuming *past* it instead would replant the children onto the failed branch's stale tip,
+/// report success for a chain that is no longer internally consistent, and delete the state —
+/// walking the user straight back into C1. This test fails if that regresses.
+#[cfg(unix)]
+#[test]
+fn audit_c1_continue_retries_the_failed_branch() {
+    let repo_name = "audit_c1_continue_retries_failed";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "commit on some_branch_2");
+    };
+
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Advance master so the chain actually has work to do.
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "master_extra.txt", "master moved on");
+        commit_all(&repo, "commit on master");
+    };
+
+    checkout_branch(&repo, "some_branch_1");
+    assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    let hook_path = path_to_repo.join(".git/hooks/pre-rebase");
+    install_pre_rebase_hook_refusing(&path_to_repo, "some_branch_2");
+
+    let branch_2_original = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    // The rebase fails on some_branch_2 and keeps the state (the C1 fix).
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_text = combined_output(&rebase_output);
+
+    let branch_1_rebased = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_after_failure = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    println!("=== C1-continue DIAGNOSTICS: the failing rebase ===");
+    println!("REBASE EXIT SUCCESS: {}", rebase_output.status.success());
+    println!("REBASE OUTPUT: {}", rebase_text);
+    println!("STATE FILE EXISTS AFTER FAILURE: {}", state_file.exists());
+    println!(
+        "some_branch_2 untouched by the failure: {}",
+        branch_2_after_failure == branch_2_original
+    );
+    println!("======");
+
+    assert!(
+        !rebase_output.status.success(),
+        "the hook should make the rebase fail, but it succeeded. Output: {}",
+        rebase_text
+    );
+    assert!(
+        state_file.exists(),
+        "the state should survive the failure, but {} does not exist",
+        state_file.display()
+    );
+    assert_eq!(
+        branch_2_after_failure, branch_2_original,
+        "some_branch_2 should be untouched by the refused rebase, but it moved from {} to {}",
+        branch_2_original, branch_2_after_failure
+    );
+
+    // Remove the obstacle, exactly as a user would after reading the failure.
+    std::fs::remove_file(&hook_path).unwrap();
+
+    let continue_output = run_test_bin(&path_to_repo, vec!["rebase", "--continue"]);
+    let continue_text = combined_output(&continue_output);
+
+    let branch_1_final = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_final = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    let master_in_branch_1 = is_ancestor(&path_to_repo, "master", "some_branch_1");
+    let branch_1_in_branch_2 = is_ancestor(&path_to_repo, "some_branch_1", "some_branch_2");
+
+    println!("=== C1-continue DIAGNOSTICS: the retry ===");
+    println!(
+        "CONTINUE EXIT SUCCESS: {}",
+        continue_output.status.success()
+    );
+    println!("CONTINUE OUTPUT: {}", continue_text);
+    println!(
+        "output announces the retry: {}",
+        continue_text.contains("Retrying branch some_branch_2")
+    );
+    println!(
+        "some_branch_2 moved: {} ({} -> {})",
+        branch_2_final != branch_2_original,
+        branch_2_original,
+        branch_2_final
+    );
+    println!(
+        "some_branch_1 untouched by the retry: {} ({} -> {})",
+        branch_1_final == branch_1_rebased,
+        branch_1_rebased,
+        branch_1_final
+    );
+    println!(
+        "master is an ancestor of some_branch_1: {}",
+        master_in_branch_1
+    );
+    println!(
+        "some_branch_1 is an ancestor of some_branch_2: {}",
+        branch_1_in_branch_2
+    );
+    println!("STATE FILE EXISTS AFTER CONTINUE: {}", state_file.exists());
+    println!("EXPECTED: the failed branch is retried and the chain ends up consistent");
+    println!("======");
+
+    // Uncomment to stop test execution and debug the retry
+    // assert!(false, "DEBUG STOP: C1 --continue retry");
+    // assert!(false, "rebase output: {}", rebase_text);
+    // assert!(false, "continue output: {}", continue_text);
+    // assert!(false, "branch_2: {} -> {}", branch_2_original, branch_2_final);
+
+    assert!(
+        continue_output.status.success(),
+        "rebase --continue should succeed once the hook is gone, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("Retrying branch some_branch_2"),
+        "rebase --continue should announce that it is retrying the failed branch, got: {}",
+        continue_text
+    );
+    // The whole point: the previously failed branch was actually rebased this time.
+    assert_ne!(
+        branch_2_final, branch_2_original,
+        "some_branch_2 should have been rebased by the retry, but it is still at {}",
+        branch_2_original
+    );
+    assert_eq!(
+        branch_1_final, branch_1_rebased,
+        "some_branch_1 was already rebased and should not move again, but it went from {} to {}",
+        branch_1_rebased, branch_1_final
+    );
+    // The chain is internally consistent: every branch contains its parent's tip.
+    assert!(
+        master_in_branch_1,
+        "some_branch_1 should contain master's tip after the rebase"
+    );
+    assert!(
+        branch_1_in_branch_2,
+        "some_branch_2 should contain some_branch_1's new tip, otherwise the chain is broken"
+    );
+    // The summary counts the retried branch, and the run is finished.
+    assert!(
+        continue_text.contains("Rebased: 2"),
+        "the summary should count both branches as rebased, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("Successfully rebased chain"),
+        "the summary should report a completed chain rebase, got: {}",
+        continue_text
+    );
+    assert!(
+        !state_file.exists(),
+        "a completed chain rebase should consume the state, but {} still exists",
+        state_file.display()
     );
 
     teardown_git_repo(repo_name);
