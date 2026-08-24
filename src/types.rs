@@ -160,6 +160,11 @@ pub enum BranchRebaseStatus {
     Pending,
     InProgress,
     Completed,
+    /// The rebase ran and the branch did not move — it was already on its parent.
+    ///
+    /// Additive: state files written before this variant existed never contain it, so the
+    /// schema version stays 1.
+    UpToDate,
     Skipped,
     SquashReset,
     Conflict,

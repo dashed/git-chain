@@ -30,6 +30,12 @@
 //! | `audit_h4_successful_run_survives_a_failed_switch_back`  | H4 · HIGH     | guard   |
 //! | `audit_m2_abort_resets_the_working_tree_it_owns`         | M2 · MEDIUM   | guard   |
 //! | `audit_m2_abort_leaves_an_unrestored_branch_alone`       | M2 · MEDIUM   | guard   |
+//! | `audit_m3_continue_retries_an_interrupted_branch`        | M3 · MEDIUM   | guard   |
+//! | `audit_m3_skip_validates_before_it_destroys`             | M3 · MEDIUM   | guard   |
+//! | `audit_m6_up_to_date_branches_are_not_reported_rebased`  | M6 · MEDIUM   | guard   |
+//! | `audit_m7_status_reports_a_live_git_rebase`              | M7 · MEDIUM   | guard   |
+//! | `audit_m5_continue_refuses_after_the_chain_changed`      | M5 · MEDIUM   | guard   |
+//! | `audit_m5_continue_refuses_after_the_chain_is_deleted`   | M5 · MEDIUM   | guard   |
 //!
 //! Rows marked "guard" were written directly against the fixed behavior — they
 //! never characterized a defect, so there is nothing to invert.
@@ -3013,4 +3019,716 @@ fn audit_h1_cleanup_backups_keeps_user_created_backups() {
     );
 
     teardown_git_repo(repo_name);
+}
+
+/// Build a chain (master → some_branch_1 → some_branch_2) whose rebase pauses on a conflict
+/// in `some_branch_2`, leaving a state file behind.
+///
+/// `some_branch_1` rebases cleanly first, so the paused state has one Completed branch and
+/// one Conflict branch — the shape most of the recovery guards below need.
+fn setup_paused_chain(repo: &git2::Repository, path_to_repo: &Path) {
+    create_new_file(path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(repo, "first commit");
+
+    create_branch(repo, "some_branch_1");
+    checkout_branch(repo, "some_branch_1");
+    create_new_file(path_to_repo, "file_1.txt", "contents 1");
+    commit_all(repo, "commit on some_branch_1");
+
+    create_branch(repo, "some_branch_2");
+    checkout_branch(repo, "some_branch_2");
+    create_new_file(path_to_repo, "shared.txt", "branch 2 version");
+    commit_all(repo, "commit on some_branch_2");
+
+    run_test_bin_expect_ok(
+        path_to_repo,
+        vec![
+            "setup",
+            "chain_name",
+            "master",
+            "some_branch_1",
+            "some_branch_2",
+        ],
+    );
+
+    checkout_branch(repo, "master");
+    create_new_file(path_to_repo, "shared.txt", "master version");
+    commit_all(repo, "conflicting commit on master");
+
+    checkout_branch(repo, "some_branch_1");
+    let output = run_test_bin(path_to_repo, vec!["rebase"]);
+    assert!(
+        !output.status.success(),
+        "the rebase should pause on the conflict in some_branch_2, got: {}",
+        combined_output(&output)
+    );
+}
+
+/// Rewrite the status of one branch in the state file, modelling a state left behind by a
+/// process that died mid-branch.
+///
+/// A real SIGKILL cannot be staged deterministically from a test, but the *observable*
+/// leftover is exactly this: a status recorded before the rebase ran, never updated.
+fn force_branch_status(state_file: &Path, branch_name: &str, status: &str) {
+    let contents = std::fs::read_to_string(state_file).unwrap();
+    let needle = format!("\"name\": \"{}\"", branch_name);
+    let branch_at = contents.find(&needle).unwrap_or_else(|| {
+        panic!(
+            "branch {} not found in state file:\n{}",
+            branch_name, contents
+        )
+    });
+    let status_at = contents[branch_at..].find("\"status\": \"").unwrap() + branch_at;
+    let value_start = status_at + "\"status\": \"".len();
+    let value_end = value_start + contents[value_start..].find('"').unwrap();
+
+    let mut rewritten = String::with_capacity(contents.len());
+    rewritten.push_str(&contents[..value_start]);
+    rewritten.push_str(status);
+    rewritten.push_str(&contents[value_end..]);
+    std::fs::write(state_file, rewritten).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// M3 · MEDIUM — a branch interrupted mid-rebase is visible and recoverable
+// ---------------------------------------------------------------------------
+
+/// Guards **M3**: branches are marked `InProgress` before their rebase runs, so a process
+/// killed mid-branch leaves a state that says so — and `--continue` retries that branch
+/// instead of walking past it.
+///
+/// Before the fix nothing was ever marked `InProgress`: a crash left the branch reading
+/// `Pending`, `--status` showed nothing unusual, and the `Conflict || InProgress` arm that
+/// `--skip` was written for could never match.
+#[test]
+fn audit_m3_continue_retries_an_interrupted_branch() {
+    let repo_name = "audit_m3_continue_retries_interrupted";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    setup_paused_chain(&repo, &path_to_repo);
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    let branch_2_original = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    // Get out of the git-level rebase, then model the post-crash state: the branch was
+    // marked before its rebase ran, and nothing ever updated it.
+    let git_abort = run_git_command(&path_to_repo, vec!["rebase", "--abort"]);
+    assert!(
+        git_abort.status.success(),
+        "git rebase --abort should succeed, got: {}",
+        combined_output(&git_abort)
+    );
+    force_branch_status(&state_file, "some_branch_2", "in_progress");
+
+    let state_before = std::fs::read_to_string(&state_file).unwrap();
+    assert!(
+        state_before.contains("\"in_progress\""),
+        "the state file should record the interrupted branch, got: {}",
+        state_before
+    );
+
+    // --status renders it, using the icon that was unreachable before M3.
+    let status_output = run_test_bin(&path_to_repo, vec!["rebase", "--status"]);
+    let status_text = combined_output(&status_output);
+
+    let continue_output = run_test_bin(&path_to_repo, vec!["rebase", "--continue"]);
+    let continue_text = combined_output(&continue_output);
+
+    let branch_2_after = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    println!("=== M3 DIAGNOSTICS ===");
+    println!("STATUS OUTPUT: {}", status_text);
+    println!(
+        "status renders the in-progress branch: {}",
+        status_text.contains("In Progress")
+    );
+    println!("CONTINUE OUTPUT: {}", continue_text);
+    println!("CONTINUE SUCCESS: {}", continue_output.status.success());
+    println!(
+        "continue announced the retry: {}",
+        continue_text.contains("Retrying branch some_branch_2")
+    );
+    println!(
+        "continue re-attempted the branch: {}",
+        continue_text.contains("Rebasing some_branch_2 onto some_branch_1")
+    );
+    println!(
+        "some_branch_2 still at its original tip: {}",
+        branch_2_after == branch_2_original
+    );
+    println!("EXPECTED: the interrupted branch is shown, then re-attempted (not walked past)");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M3 interrupted branch");
+    // assert!(false, "status: {}", status_text);
+    // assert!(false, "continue: {}", continue_text);
+
+    assert!(
+        status_output.status.success(),
+        "rebase --status should succeed, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("In Progress"),
+        "rebase --status should render the interrupted branch, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("🔧"),
+        "the in-progress icon should be reachable now, got: {}",
+        status_text
+    );
+
+    // The M3 guarantee: the interrupted branch is re-attempted, not walked past.
+    assert!(
+        continue_text.contains("Retrying branch some_branch_2"),
+        "rebase --continue should retry the interrupted branch, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("was interrupted before it finished"),
+        "the retry notice should say the branch was interrupted, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("Rebasing some_branch_2 onto some_branch_1"),
+        "the retry should actually run the branch's rebase, got: {}",
+        continue_text
+    );
+    // This scenario's conflict is real, so the retry stops on it — which is the point:
+    // before M3 the branch was skipped over and the run reported success instead.
+    assert!(
+        !continue_output.status.success(),
+        "the retry hits the branch's genuine conflict rather than reporting success, got: {}",
+        continue_text
+    );
+    assert!(
+        !continue_text.contains("Successfully rebased chain"),
+        "a run that could not rebase the branch must not claim success, got: {}",
+        continue_text
+    );
+    assert_eq!(
+        branch_2_after, branch_2_original,
+        "the conflicted branch should not have moved, got {}",
+        branch_2_after
+    );
+    assert!(
+        state_file.exists(),
+        "the state should be kept so the paused run can still be recovered"
+    );
+
+    // And the run is still recoverable.
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+
+    println!("ABORT OUTPUT: {}", abort_text);
+
+    assert!(
+        abort_output.status.success(),
+        "--abort should recover the run, got: {}",
+        abort_text
+    );
+    assert!(
+        !state_file.exists(),
+        "a successful --abort should consume the state"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// Guards the second half of **M3**: `--skip` decides whether there is anything to skip
+/// BEFORE it runs its destructive `git rebase --abort`.
+///
+/// The old order aborted the git-level rebase first and only then discovered it had nothing
+/// to skip — throwing away in-progress work to reach an error message. The refusal must now
+/// be inert: the git rebase still in progress, the state file byte-identical, no ref moved.
+#[test]
+fn audit_m3_skip_validates_before_it_destroys() {
+    let repo_name = "audit_m3_skip_validates_first";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    setup_paused_chain(&repo, &path_to_repo);
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    // Model a state with nothing skippable while a git rebase really is in progress: the
+    // conflicted branch is recorded as still Pending, which is exactly what M3's missing
+    // InProgress marking used to produce after a crash.
+    force_branch_status(&state_file, "some_branch_2", "pending");
+
+    let state_before = std::fs::read_to_string(&state_file).unwrap();
+    let branch_1_before = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_before = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+    let rebase_dir_before = path_to_repo.join(".git/rebase-merge").is_dir();
+
+    let skip_output = run_test_bin(&path_to_repo, vec!["rebase", "--skip"]);
+    let skip_text = combined_output(&skip_output);
+
+    let state_after = std::fs::read_to_string(&state_file).unwrap();
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_after = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+    let rebase_dir_after = path_to_repo.join(".git/rebase-merge").is_dir();
+
+    println!("=== M3/skip DIAGNOSTICS ===");
+    println!("SKIP EXIT SUCCESS: {}", skip_output.status.success());
+    println!("SKIP OUTPUT: {}", skip_text);
+    println!(
+        ".git/rebase-merge before: {} / after: {}",
+        rebase_dir_before, rebase_dir_after
+    );
+    println!("state file unchanged: {}", state_after == state_before);
+    println!(
+        "branches unmoved: some_branch_1={} some_branch_2={}",
+        branch_1_after == branch_1_before,
+        branch_2_after == branch_2_before
+    );
+    println!(
+        "output says the git rebase was aborted: {}",
+        skip_text.contains("Aborting in-progress git rebase")
+    );
+    println!("EXPECTED: the refusal has no side effects at all");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M3 skip validation order");
+    // assert!(false, "skip output: {}", skip_text);
+
+    // Precondition: a git rebase really is in progress, so aborting it would destroy work.
+    assert!(
+        rebase_dir_before,
+        "the scenario requires a git rebase in progress (.git/rebase-merge)"
+    );
+
+    assert!(
+        !skip_output.status.success(),
+        "rebase --skip should refuse when nothing is skippable, got: {}",
+        skip_text
+    );
+    assert!(
+        skip_text.contains("No conflicted or interrupted branch to skip"),
+        "the refusal should say what it looked for, got: {}",
+        skip_text
+    );
+    // The whole point: the refusal ran before the destructive step.
+    assert!(
+        !skip_text.contains("Aborting in-progress git rebase"),
+        "the refused skip must not abort the git-level rebase, got: {}",
+        skip_text
+    );
+    assert!(
+        rebase_dir_after,
+        "the git rebase should still be in progress after a refused skip"
+    );
+    assert_eq!(
+        state_after, state_before,
+        "a refused skip must leave the state file untouched"
+    );
+    assert_eq!(
+        branch_1_after, branch_1_before,
+        "a refused skip must not move some_branch_1"
+    );
+    assert_eq!(
+        branch_2_after, branch_2_before,
+        "a refused skip must not move some_branch_2"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
+// M6 · MEDIUM — the summary distinguishes rebased from already up-to-date
+// ---------------------------------------------------------------------------
+
+/// Guards **M6** (and release-audit MEDIUM 2): a branch whose tip did not move is reported
+/// as up-to-date, not as rebased.
+///
+/// The old summary marked every successful branch `Completed` and printed "✅ Rebased: N"
+/// directly above "Chain … is already up-to-date" — two contradictory claims in one report.
+#[test]
+fn audit_m6_up_to_date_branches_are_not_reported_rebased() {
+    let repo_name = "audit_m6_up_to_date_summary";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    create_branch(&repo, "some_branch_1");
+    checkout_branch(&repo, "some_branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+    commit_all(&repo, "commit on some_branch_1");
+
+    create_branch(&repo, "some_branch_2");
+    checkout_branch(&repo, "some_branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+    commit_all(&repo, "commit on some_branch_2");
+
+    run_test_bin_expect_ok(
+        &path_to_repo,
+        vec![
+            "setup",
+            "chain_name",
+            "master",
+            "some_branch_1",
+            "some_branch_2",
+        ],
+    );
+
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_extra.txt", "master moved on");
+    commit_all(&repo, "commit on master");
+    checkout_branch(&repo, "some_branch_1");
+
+    // First run: real work.
+    let first_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let first_text = combined_output(&first_output);
+
+    // Second run: nothing to do.
+    let second_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let second_text = combined_output(&second_output);
+
+    println!("=== M6 DIAGNOSTICS ===");
+    println!("FIRST RUN: {}", first_text);
+    println!("SECOND RUN: {}", second_text);
+    println!(
+        "first run reports Rebased: 2: {}",
+        first_text.contains("✅ Rebased: 2")
+    );
+    println!(
+        "second run reports Up-to-date: 2: {}",
+        second_text.contains("Up-to-date: 2")
+    );
+    println!(
+        "second run still claims Rebased: {}",
+        second_text.contains("✅ Rebased:")
+    );
+    println!("EXPECTED: the second run reports up-to-date, not rebased");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M6 up-to-date summary");
+    // assert!(false, "second run: {}", second_text);
+
+    assert!(
+        first_output.status.success(),
+        "the first rebase should succeed, got: {}",
+        first_text
+    );
+    assert!(
+        first_text.contains("✅ Rebased: 2"),
+        "the first run really did rebase both branches, got: {}",
+        first_text
+    );
+    assert!(
+        first_text.contains("🎉 Successfully rebased chain"),
+        "the first run should report success, got: {}",
+        first_text
+    );
+
+    assert!(
+        second_output.status.success(),
+        "the second rebase should succeed, got: {}",
+        second_text
+    );
+    // The defect this guards: unmoved branches counted as rebased.
+    assert!(
+        second_text.contains("Up-to-date: 2"),
+        "the second run should report both branches as up-to-date, got: {}",
+        second_text
+    );
+    assert!(
+        !second_text.contains("✅ Rebased:"),
+        "the second run must not claim any branch was rebased, got: {}",
+        second_text
+    );
+    assert!(
+        second_text.contains("already up-to-date"),
+        "the second run should close with the up-to-date line, got: {}",
+        second_text
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
+// M7 · MEDIUM — `--status` consults the repository, not just the state file
+// ---------------------------------------------------------------------------
+
+/// Guards **M7**: `rebase --status` reports a live (or orphaned) git-level rebase.
+///
+/// The report used to render the JSON state alone, so a repository sitting in
+/// `.git/rebase-merge` looked idle — and the advice the user acted on was wrong.
+#[test]
+fn audit_m7_status_reports_a_live_git_rebase() {
+    let repo_name = "audit_m7_status_sees_git_rebase";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    setup_paused_chain(&repo, &path_to_repo);
+
+    let rebase_dir = path_to_repo.join(".git/rebase-merge");
+
+    let status_output = run_test_bin(&path_to_repo, vec!["rebase", "--status"]);
+    let status_text = combined_output(&status_output);
+
+    println!("=== M7 DIAGNOSTICS ===");
+    println!(".git/rebase-merge exists: {}", rebase_dir.is_dir());
+    println!("STATUS OUTPUT: {}", status_text);
+    println!(
+        "status reports the git rebase: {}",
+        status_text.contains("A git rebase is in progress")
+    );
+    println!(
+        "status names the branch: {}",
+        status_text.contains("some_branch_2")
+    );
+    println!("EXPECTED: the live git rebase is reported before the table");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M7 status");
+    // assert!(false, "status: {}", status_text);
+
+    assert!(
+        rebase_dir.is_dir(),
+        "the scenario requires a git rebase in progress"
+    );
+    assert!(
+        status_output.status.success(),
+        "rebase --status should succeed, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("A git rebase is in progress"),
+        "rebase --status should report the git-level rebase, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("some_branch_2"),
+        "the report should name the branch being rebased, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("git rebase --abort"),
+        "the report should say how to deal with it, got: {}",
+        status_text
+    );
+    // The chain table still follows.
+    assert!(
+        status_text.contains("Chain Rebase Status"),
+        "the chain table should still be printed, got: {}",
+        status_text
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
+// M5 · MEDIUM — the chain is revalidated before a paused rebase resumes
+// ---------------------------------------------------------------------------
+
+/// Guards **M5**: editing the chain while a rebase is paused makes the recorded merge bases
+/// and parents stale, so `--continue` refuses rather than rebasing onto the wrong commits.
+///
+/// Before the fix a branch removed from the chain was still rebased, a branch added was
+/// silently ignored, and reordering quietly used the old parents.
+#[test]
+fn audit_m5_continue_refuses_after_the_chain_changed() {
+    let repo_name = "audit_m5_chain_changed";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    setup_paused_chain(&repo, &path_to_repo);
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    let branch_1_original = state_original_ref(&state_file, "some_branch_1");
+
+    // Remove a branch from the chain mid-pause. The branch itself still exists — this is a
+    // chain edit, not a deletion.
+    let git_abort = run_git_command(&path_to_repo, vec!["rebase", "--abort"]);
+    assert!(
+        git_abort.status.success(),
+        "git rebase --abort should succeed, got: {}",
+        combined_output(&git_abort)
+    );
+    checkout_branch(&repo, "some_branch_2");
+    let remove_output = run_test_bin(&path_to_repo, vec!["remove"]);
+    assert!(
+        remove_output.status.success(),
+        "removing some_branch_2 from the chain should succeed, got: {}",
+        combined_output(&remove_output)
+    );
+
+    let continue_output = run_test_bin(&path_to_repo, vec!["rebase", "--continue"]);
+    let continue_text = combined_output(&continue_output);
+
+    let skip_output = run_test_bin(&path_to_repo, vec!["rebase", "--skip"]);
+    let skip_text = combined_output(&skip_output);
+
+    println!("=== M5 DIAGNOSTICS ===");
+    println!("CONTINUE SUCCESS: {}", continue_output.status.success());
+    println!("CONTINUE OUTPUT: {}", continue_text);
+    println!("SKIP SUCCESS: {}", skip_output.status.success());
+    println!("SKIP OUTPUT: {}", skip_text);
+    println!(
+        "continue names the removed branch: {}",
+        continue_text.contains("some_branch_2")
+    );
+    println!("EXPECTED: both refuse and point at --abort");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M5 chain changed");
+    // assert!(false, "continue: {}", continue_text);
+
+    assert!(
+        !continue_output.status.success(),
+        "rebase --continue should refuse after the chain changed, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("has changed since this rebase started"),
+        "the refusal should say the chain changed, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("some_branch_2"),
+        "the refusal should name the branch that left the chain, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("rebase --abort"),
+        "the refusal should point at --abort, got: {}",
+        continue_text
+    );
+    // --skip goes through the same guard.
+    assert!(
+        !skip_output.status.success(),
+        "rebase --skip should refuse too, got: {}",
+        skip_text
+    );
+    assert!(
+        skip_text.contains("has changed since this rebase started"),
+        "the skip refusal should say the chain changed, got: {}",
+        skip_text
+    );
+
+    // --abort still recovers, because it restores from the state snapshot.
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!(
+        "some_branch_1 restored to its recorded original: {}",
+        branch_1_after == branch_1_original
+    );
+
+    assert!(
+        abort_output.status.success(),
+        "--abort should still recover, got: {}",
+        abort_text
+    );
+    assert_eq!(
+        branch_1_after, branch_1_original,
+        "--abort should restore some_branch_1 to the OID recorded in the state ({}), got {}",
+        branch_1_original, branch_1_after
+    );
+    assert!(
+        !state_file.exists(),
+        "a successful --abort should consume the state"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// The same guard when the chain is deleted outright rather than edited.
+#[test]
+fn audit_m5_continue_refuses_after_the_chain_is_deleted() {
+    let repo_name = "audit_m5_chain_deleted";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    setup_paused_chain(&repo, &path_to_repo);
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    let git_abort = run_git_command(&path_to_repo, vec!["rebase", "--abort"]);
+    assert!(
+        git_abort.status.success(),
+        "git rebase --abort should succeed, got: {}",
+        combined_output(&git_abort)
+    );
+
+    let delete_output = run_test_bin(&path_to_repo, vec!["remove", "--chain", "chain_name"]);
+    assert!(
+        delete_output.status.success(),
+        "deleting the chain should succeed, got: {}",
+        combined_output(&delete_output)
+    );
+
+    let continue_output = run_test_bin(&path_to_repo, vec!["rebase", "--continue"]);
+    let continue_text = combined_output(&continue_output);
+
+    println!("=== M5/deleted-chain DIAGNOSTICS ===");
+    println!("CONTINUE SUCCESS: {}", continue_output.status.success());
+    println!("CONTINUE OUTPUT: {}", continue_text);
+    println!(
+        "refusal says the chain no longer exists: {}",
+        continue_text.contains("no longer exists")
+    );
+    println!("EXPECTED: --continue refuses, --abort still recovers");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M5 chain deleted");
+    // assert!(false, "continue: {}", continue_text);
+
+    assert!(
+        !continue_output.status.success(),
+        "rebase --continue should refuse when the chain is gone, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("no longer exists"),
+        "the refusal should say the chain is gone, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("rebase --abort"),
+        "the refusal should point at --abort, got: {}",
+        continue_text
+    );
+
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+
+    println!("ABORT OUTPUT: {}", abort_text);
+
+    assert!(
+        abort_output.status.success(),
+        "--abort should still recover a rebase whose chain was deleted, got: {}",
+        abort_text
+    );
+    assert!(
+        !state_file.exists(),
+        "a successful --abort should consume the state"
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// The OID recorded for `branch_name` in the state file's `original_refs`.
+fn state_original_ref(state_file: &Path, branch_name: &str) -> String {
+    let contents = std::fs::read_to_string(state_file).unwrap();
+    let needle = format!("\"{}\": \"", branch_name);
+    let at = contents
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{} not in original_refs:\n{}", branch_name, contents))
+        + needle.len();
+    let end = at + contents[at..].find('"').unwrap();
+    contents[at..end].to_string()
 }

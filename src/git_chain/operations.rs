@@ -304,6 +304,13 @@ impl GitChain {
                 }
             }
 
+            // Mark the branch before the rebase runs, so a process killed mid-branch leaves
+            // a state that says so. `--status` then shows it, and `--continue`/`--skip` can
+            // act on it instead of mistaking it for untouched work (REBASE_AUDIT M3).
+            if !step_rebase {
+                self.update_branch_state(index, BranchRebaseStatus::InProgress)?;
+            }
+
             let (command, mut rebase_command) =
                 self.chain_rebase_command(prev_branch_name, common_point, &branch.branch_name);
 
@@ -346,13 +353,21 @@ impl GitChain {
                     io::stderr().write_all(&output.stderr).unwrap();
 
                     let after_sha1 = self.get_commit_hash_of_head()?;
+                    let moved = before_sha1 != after_sha1;
 
-                    if before_sha1 != after_sha1 {
+                    if moved {
                         num_of_rebase_operations += 1;
                     }
 
+                    // A branch that did not move was already on its parent. Recording it as
+                    // "Completed" made the summary claim it had been rebased (REBASE_AUDIT M6).
                     if !step_rebase {
-                        self.update_branch_state(index, BranchRebaseStatus::Completed)?;
+                        let status = if moved {
+                            BranchRebaseStatus::Completed
+                        } else {
+                            BranchRebaseStatus::UpToDate
+                        };
+                        self.update_branch_state(index, status)?;
                     }
                     // go ahead to rebase next branch.
                 }
@@ -389,7 +404,7 @@ impl GitChain {
                 );
             }
             let state = read_state(&self.repo)?;
-            self.print_rebase_summary(&state, num_of_rebase_operations);
+            self.print_rebase_summary(&state);
             if cleanup_backups {
                 self.cleanup_backup_branches(&state.created_backups);
             }
@@ -569,6 +584,123 @@ impl GitChain {
         }
     }
 
+    /// Require the chain to still look the way it did when the paused rebase was planned.
+    ///
+    /// Every `merge_bases` entry and every branch's recorded `parent` were computed from the
+    /// chain as it stood when the run started. Editing the chain mid-pause — removing a
+    /// branch, adding one, reordering, or changing the root — makes those stale, and resuming
+    /// would replay commits onto the wrong parents while reporting success (REBASE_AUDIT M5).
+    ///
+    /// A branch deleted from git outright is not a chain edit: `git branch -D` takes the
+    /// branch's config with it, and the resume loop already copes by marking it skipped. When
+    /// any recorded branch's ref has gone, the chain shape is not checked at all — reading the
+    /// chain in that state is itself unreliable, since a half-removed branch config aborts the
+    /// chain lookup. Every case this guard is for (a branch removed from the chain, one added,
+    /// a reorder, a new root, the chain deleted) leaves the refs themselves in place.
+    ///
+    /// `--abort` is unaffected either way: it restores from the state snapshot, not from the
+    /// chain.
+    fn validate_chain_unchanged(&self, state: &ChainRebaseState) -> Result<(), Error> {
+        for branch in &state.branches {
+            if !self.git_local_branch_exists(&branch.name).unwrap_or(false) {
+                return Ok(());
+            }
+        }
+
+        let stale = |detail: String| {
+            Error::from_str(&format!(
+                "🛑 The chain {} has changed since this rebase started: {}\n\
+                 The recorded merge bases and parents no longer describe this chain, so \
+                 resuming would rebase onto the wrong commits.\n\
+                 Run '{} rebase --abort' to restore every branch to where it was, then start \
+                 again.",
+                state.chain_name, detail, self.executable_name
+            ))
+        };
+
+        if !Chain::chain_exists(self, &state.chain_name)? {
+            return Err(stale(String::from("the chain no longer exists")));
+        }
+
+        let chain = Chain::get_chain(self, &state.chain_name)?;
+
+        if chain.root_branch != state.root_branch {
+            return Err(stale(format!(
+                "the root branch is now {} but the rebase was planned against {}",
+                chain.root_branch, state.root_branch
+            )));
+        }
+
+        let current: Vec<&str> = chain
+            .branches
+            .iter()
+            .map(|b| b.branch_name.as_str())
+            .collect();
+        let recorded: Vec<&str> = state.branches.iter().map(|b| b.name.as_str()).collect();
+
+        if current == recorded {
+            return Ok(());
+        }
+
+        let added: Vec<&str> = current
+            .iter()
+            .filter(|name| !recorded.contains(name))
+            .copied()
+            .collect();
+        let removed: Vec<&str> = recorded
+            .iter()
+            .filter(|name| !current.contains(name))
+            .copied()
+            .collect();
+
+        if !added.is_empty() {
+            return Err(stale(format!(
+                "branch(es) added to the chain: {}",
+                added.join(", ")
+            )));
+        }
+        if !removed.is_empty() {
+            return Err(stale(format!(
+                "branch(es) removed from the chain: {}",
+                removed.join(", ")
+            )));
+        }
+
+        // Same membership, different order.
+        let mut current_sorted = current.clone();
+        let mut recorded_sorted = recorded.clone();
+        current_sorted.sort_unstable();
+        recorded_sorted.sort_unstable();
+        if current_sorted == recorded_sorted {
+            return Err(stale(format!(
+                "the branches were reordered (now {}, was {})",
+                current.join(" → "),
+                recorded.join(" → ")
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// The branch a git-level rebase is operating on, read from git's own rebase state.
+    ///
+    /// Both backends record it in `head-name` as a full ref; the file is absent when no
+    /// rebase is in progress, and unreadable state simply yields `None` rather than failing
+    /// a read-only status report.
+    fn git_level_rebase_branch(&self) -> Option<String> {
+        for dir in ["rebase-merge", "rebase-apply"] {
+            let head_name = self.repo.path().join(dir).join("head-name");
+            if let Ok(contents) = std::fs::read_to_string(&head_name) {
+                let name = contents.trim();
+                let name = name.strip_prefix("refs/heads/").unwrap_or(name);
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+        None
+    }
+
     /// Advice appended to a chain-rebase failure whose repository state stayed clean
     /// (a refusing hook, a branch checked out in another worktree, ENOSPC, ...).
     ///
@@ -669,23 +801,34 @@ impl GitChain {
 
         // 4. Load state
         let mut state = read_state(&self.repo)?;
+        self.validate_chain_unchanged(&state)?;
 
-        // 5. Put a branch left `Failed` back in the queue.
+        // 5. Put a branch left `Failed` or `InProgress` back in the queue.
         //
-        // A `Failed` branch was never moved: the repository stayed clean and no git rebase is
-        // in progress, so re-attempting it from its frozen merge base is exactly what a fresh
-        // run would do. Resuming *past* it would replant its children onto its stale tip and
+        // `Failed` means the rebase was attempted and refused; `InProgress` means the process
+        // died between marking the branch and finishing it (REBASE_AUDIT M3). Neither branch
+        // completed, and the repository is clean — checked above — so re-attempting from the
+        // frozen merge base is exactly what a fresh run would do. git's patch-id detection
+        // absorbs a partially-applied replay whose content is unchanged.
+        //
+        // Resuming *past* such a branch would replant its children onto its stale tip and
         // report success for a chain that is no longer internally consistent.
-        let failed_index = state
-            .branches
-            .iter()
-            .position(|b| b.status == BranchRebaseStatus::Failed);
+        let requeue_index = state.branches.iter().position(|b| {
+            matches!(
+                b.status,
+                BranchRebaseStatus::Failed | BranchRebaseStatus::InProgress
+            )
+        });
 
-        let retried_branch = match failed_index {
+        let retried_branch = match requeue_index {
             Some(idx) => {
+                let reason = match state.branches[idx].status {
+                    BranchRebaseStatus::InProgress => "was interrupted before it finished",
+                    _ => "failed to rebase on the previous attempt",
+                };
                 state.branches[idx].status = BranchRebaseStatus::Pending;
                 write_state(&self.repo, &state)?;
-                Some(state.branches[idx].name.clone())
+                Some((state.branches[idx].name.clone(), reason))
             }
             None => None,
         };
@@ -733,48 +876,18 @@ impl GitChain {
                 idx + 1
             }
             None => {
-                // No conflict found — look for InProgress
-                let in_progress_index = state
+                // No conflict. An `InProgress` branch was already requeued to `Pending` in
+                // step 5, so the first pending branch is the right place to pick up.
+                state
                     .branches
                     .iter()
-                    .position(|b| b.status == BranchRebaseStatus::InProgress);
-                match in_progress_index {
-                    Some(idx) => {
-                        let branch_name = &state.branches[idx].name;
-
-                        // Detect external git rebase --abort
-                        if let Some(original_oid) = state.original_refs.get(branch_name) {
-                            let current_oid = self.get_branch_commit_oid(branch_name)?;
-                            if &current_oid == original_oid {
-                                return Err(Error::from_str(&format!(
-                                    "It appears the rebase for branch '{}' was aborted externally \
-                                     (via git rebase --abort).\n\
-                                     Use '{} rebase --skip' to skip this branch and continue with \
-                                     the rest of the chain,\n\
-                                     or  '{} rebase --abort' to cancel the entire chain rebase.",
-                                    branch_name, self.executable_name, self.executable_name
-                                )));
-                            }
-                        }
-
-                        state.branches[idx].status = BranchRebaseStatus::Completed;
-                        write_state(&self.repo, &state)?;
-                        idx + 1
-                    }
-                    None => {
-                        // Find first pending branch
-                        state
-                            .branches
-                            .iter()
-                            .position(|b| b.status == BranchRebaseStatus::Pending)
-                            .unwrap_or(state.branches.len())
-                    }
-                }
+                    .position(|b| b.status == BranchRebaseStatus::Pending)
+                    .unwrap_or(state.branches.len())
             }
         };
 
         // The requeued branch must not be skipped over: resume at whichever comes first.
-        let resume_from = match failed_index {
+        let resume_from = match requeue_index {
             Some(idx) => resume_from.min(idx),
             None => resume_from,
         };
@@ -801,17 +914,16 @@ impl GitChain {
         }
 
         // 7. Resume the rebase loop from resume_from
-        let mut num_of_rebase_operations = 0;
-
         println!(
             "Continuing chain rebase for chain {}...",
             state.chain_name.bold()
         );
 
-        if let Some(branch_name) = &retried_branch {
+        if let Some((branch_name, reason)) = &retried_branch {
             println!(
-                "🔁 Retrying branch {}, which failed to rebase on the previous attempt.",
-                branch_name.bold()
+                "🔁 Retrying branch {}, which {}.",
+                branch_name.bold(),
+                reason
             );
         }
 
@@ -909,6 +1021,9 @@ impl GitChain {
                 }
             }
 
+            // Mark the branch before the rebase runs (REBASE_AUDIT M3).
+            self.update_branch_state_in(&mut state, i, BranchRebaseStatus::InProgress)?;
+
             let (command, mut rebase_command) = self.chain_rebase_command(
                 parent_name.as_str(),
                 common_point.as_str(),
@@ -940,11 +1055,13 @@ impl GitChain {
                     io::stderr().write_all(&output.stderr).unwrap();
 
                     let after_sha1 = self.get_commit_hash_of_head()?;
-                    if before_sha1 != after_sha1 {
-                        num_of_rebase_operations += 1;
-                    }
+                    let status = if before_sha1 == after_sha1 {
+                        BranchRebaseStatus::UpToDate
+                    } else {
+                        BranchRebaseStatus::Completed
+                    };
 
-                    self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Completed)?;
+                    self.update_branch_state_in(&mut state, i, status)?;
                 }
                 _ => {
                     self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Conflict)?;
@@ -968,7 +1085,7 @@ impl GitChain {
         }
 
         // Print summary and clean up
-        self.print_rebase_summary(&state, num_of_rebase_operations);
+        self.print_rebase_summary(&state);
         if cleanup_backups {
             self.cleanup_backup_branches(&state.created_backups);
         }
@@ -1028,7 +1145,26 @@ impl GitChain {
             ));
         }
 
-        // 2. If git rebase is in progress, abort it first
+        // 2. Load state and find the branch to skip BEFORE touching anything. Aborting the
+        //    git-level rebase first would destroy work even when there is nothing to skip
+        //    (REBASE_AUDIT M3).
+        let mut state = read_state(&self.repo)?;
+        self.validate_chain_unchanged(&state)?;
+
+        let skip_index = state.branches.iter().position(|b| {
+            b.status == BranchRebaseStatus::Conflict || b.status == BranchRebaseStatus::InProgress
+        });
+
+        let skip_index = match skip_index {
+            Some(idx) => idx,
+            None => {
+                return Err(Error::from_str(
+                    "No conflicted or interrupted branch to skip.",
+                ));
+            }
+        };
+
+        // 3. Only now, with something to skip, abort the git-level rebase.
         match self.repo.state() {
             RepositoryState::Clean => {
                 // No git rebase to abort
@@ -1053,66 +1189,59 @@ impl GitChain {
             }
         }
 
-        // 3. Load state
-        let mut state = read_state(&self.repo)?;
+        let resume_from = {
+            let idx = skip_index;
+            let branch_name = state.branches[idx].name.clone();
 
-        // 4. Find branch with Conflict or InProgress status
-        let skip_index = state.branches.iter().position(|b| {
-            b.status == BranchRebaseStatus::Conflict || b.status == BranchRebaseStatus::InProgress
-        });
+            // 4. Restore branch to its original position. A failed restore leaves the branch
+            //    somewhere the rest of the run would build on, so it is an error rather than a
+            //    warning — keep the state so the user can fix it and retry (REBASE_AUDIT M6).
+            if let Some(original_oid) = state.original_refs.get(&branch_name) {
+                let output = Command::new("git")
+                    .arg("update-ref")
+                    .arg("-m")
+                    .arg(format!("chain rebase (skip): restoring {}", branch_name))
+                    .arg(format!("refs/heads/{}", branch_name))
+                    .arg(original_oid)
+                    .output();
 
-        let resume_from = match skip_index {
-            Some(idx) => {
-                let branch_name = state.branches[idx].name.clone();
+                let failure = match output {
+                    Ok(result) if result.status.success() => None,
+                    Ok(result) => Some(String::from_utf8_lossy(&result.stderr).trim().to_string()),
+                    Err(e) => Some(e.to_string()),
+                };
 
-                // 5. Restore branch to its original position
-                if let Some(original_oid) = state.original_refs.get(&branch_name) {
-                    let output = Command::new("git")
-                        .arg("update-ref")
-                        .arg(format!("refs/heads/{}", branch_name))
-                        .arg(original_oid)
-                        .output();
-
-                    match output {
-                        Ok(result) if result.status.success() => {}
-                        Ok(result) => {
-                            let stderr = String::from_utf8_lossy(&result.stderr);
-                            eprintln!(
-                                "  ⚠️  Failed to restore {}: {}",
-                                branch_name.bold(),
-                                stderr.trim()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("  ⚠️  Failed to restore {}: {}", branch_name.bold(), e);
-                        }
-                    }
+                if let Some(reason) = failure {
+                    return Err(Error::from_str(&format!(
+                        "🛑 Could not restore {} to its original commit: {}\n\
+                         The branch has not been skipped and the chain rebase state has been \
+                         kept — resolve the problem and run '{} rebase --skip' again, or \
+                         '{} rebase --abort' to cancel the whole rebase.",
+                        branch_name, reason, self.executable_name, self.executable_name
+                    )));
                 }
+            }
 
-                // 6. Mark as Skipped
-                println!(
-                    "⏭️  Skipping branch {}, restoring to original position",
-                    branch_name.bold()
-                );
-                state.branches[idx].status = BranchRebaseStatus::Skipped;
-                state.completed_count = state
-                    .branches
-                    .iter()
-                    .filter(|b| {
-                        matches!(
-                            b.status,
-                            BranchRebaseStatus::Completed
-                                | BranchRebaseStatus::Skipped
-                                | BranchRebaseStatus::SquashReset
-                        )
-                    })
-                    .count();
-                write_state(&self.repo, &state)?;
-                idx + 1
-            }
-            None => {
-                return Err(Error::from_str("No conflicted branch to skip."));
-            }
+            // 5. Mark as Skipped
+            println!(
+                "⏭️  Skipping branch {}, restoring to original position",
+                branch_name.bold()
+            );
+            state.branches[idx].status = BranchRebaseStatus::Skipped;
+            state.completed_count = state
+                .branches
+                .iter()
+                .filter(|b| {
+                    matches!(
+                        b.status,
+                        BranchRebaseStatus::Completed
+                            | BranchRebaseStatus::Skipped
+                            | BranchRebaseStatus::SquashReset
+                    )
+                })
+                .count();
+            write_state(&self.repo, &state)?;
+            idx + 1
         };
 
         // Parse squashed_merge_handling from state
@@ -1137,8 +1266,6 @@ impl GitChain {
         }
 
         // 7. Resume the rebase loop from the next pending branch
-        let mut num_of_rebase_operations = 0;
-
         println!(
             "Continuing chain rebase for chain {}...",
             state.chain_name.bold()
@@ -1238,6 +1365,9 @@ impl GitChain {
                 }
             }
 
+            // Mark the branch before the rebase runs (REBASE_AUDIT M3).
+            self.update_branch_state_in(&mut state, i, BranchRebaseStatus::InProgress)?;
+
             let (command, mut rebase_command) = self.chain_rebase_command(
                 parent_name.as_str(),
                 common_point.as_str(),
@@ -1269,11 +1399,13 @@ impl GitChain {
                     io::stderr().write_all(&output.stderr).unwrap();
 
                     let after_sha1 = self.get_commit_hash_of_head()?;
-                    if before_sha1 != after_sha1 {
-                        num_of_rebase_operations += 1;
-                    }
+                    let status = if before_sha1 == after_sha1 {
+                        BranchRebaseStatus::UpToDate
+                    } else {
+                        BranchRebaseStatus::Completed
+                    };
 
-                    self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Completed)?;
+                    self.update_branch_state_in(&mut state, i, status)?;
                 }
                 _ => {
                     self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Conflict)?;
@@ -1297,7 +1429,7 @@ impl GitChain {
         }
 
         // Print summary and clean up
-        self.print_rebase_summary(&state, num_of_rebase_operations);
+        self.print_rebase_summary(&state);
         if cleanup_backups {
             self.cleanup_backup_branches(&state.created_backups);
         }
@@ -1332,6 +1464,26 @@ impl GitChain {
         let state = read_state(&self.repo)?;
 
         println!();
+
+        // The state file records what git-chain believes; the repository records what git is
+        // actually doing. A live or orphaned git rebase is invisible in the JSON, so report it
+        // first — it changes which recovery command the user should reach for
+        // (REBASE_AUDIT M7).
+        if !matches!(self.repo.state(), RepositoryState::Clean) {
+            match self.git_level_rebase_branch() {
+                Some(branch_name) => println!(
+                    "⚠️  A git rebase is in progress in this repository (branch {}).",
+                    branch_name.bold()
+                ),
+                None => println!("⚠️  A git rebase is in progress in this repository."),
+            }
+            println!(
+                "   Finish or abort it with git before resuming: 'git rebase --continue' or \
+                 'git rebase --abort'."
+            );
+            println!();
+        }
+
         println!("📊 Chain Rebase Status: {}", state.chain_name.bold());
         println!("   Root: {}", state.root_branch.bold());
         println!();
@@ -1344,6 +1496,7 @@ impl GitChain {
                 BranchRebaseStatus::Conflict => ("❌", "Conflict"),
                 BranchRebaseStatus::InProgress => ("🔧", "In Progress"),
                 BranchRebaseStatus::Failed => ("💥", "Failed"),
+                BranchRebaseStatus::UpToDate => ("✔️ ", "Up-to-date"),
                 BranchRebaseStatus::Pending => ("⏳", "Pending"),
             };
 
@@ -1423,28 +1576,24 @@ impl GitChain {
     }
 
     /// Print a summary report after rebase completion.
-    fn print_rebase_summary(&self, state: &ChainRebaseState, num_of_rebase_operations: usize) {
-        let completed = state
-            .branches
-            .iter()
-            .filter(|b| b.status == BranchRebaseStatus::Completed)
-            .count();
-        let skipped = state
-            .branches
-            .iter()
-            .filter(|b| b.status == BranchRebaseStatus::Skipped)
-            .count();
-        let squash_reset = state
-            .branches
-            .iter()
-            .filter(|b| b.status == BranchRebaseStatus::SquashReset)
-            .count();
+    fn print_rebase_summary(&self, state: &ChainRebaseState) {
+        let count_of = |status: BranchRebaseStatus| {
+            state.branches.iter().filter(|b| b.status == status).count()
+        };
+
+        let completed = count_of(BranchRebaseStatus::Completed);
+        let up_to_date = count_of(BranchRebaseStatus::UpToDate);
+        let skipped = count_of(BranchRebaseStatus::Skipped);
+        let squash_reset = count_of(BranchRebaseStatus::SquashReset);
 
         println!();
         println!("📊 Rebase Summary for Chain: {}", state.chain_name.bold());
 
         if completed > 0 {
             println!("  ✅ Rebased: {}", completed);
+        }
+        if up_to_date > 0 {
+            println!("  ✔️  Up-to-date: {}", up_to_date);
         }
         if skipped > 0 {
             println!("  ⏭️  Skipped: {}", skipped);
@@ -1453,9 +1602,27 @@ impl GitChain {
             println!("  🔄 Reset (squash-merge): {}", squash_reset);
         }
 
+        // Derived from what the branches actually record, rather than from a parallel
+        // counter — a branch that never moved must not read as "rebased", and a run that
+        // skipped a branch must not claim unqualified success (REBASE_AUDIT M6).
+        let rebased = completed + squash_reset;
+        let skip_note = if skipped == 1 {
+            String::from(" (1 branch skipped)")
+        } else {
+            format!(" ({} branches skipped)", skipped)
+        };
+
         println!();
-        if num_of_rebase_operations > 0 {
+        if rebased > 0 && skipped > 0 {
+            println!("🎉 Rebased chain {}{}", state.chain_name.bold(), skip_note);
+        } else if rebased > 0 {
             println!("🎉 Successfully rebased chain {}", state.chain_name.bold());
+        } else if skipped > 0 {
+            println!(
+                "Chain {} is up-to-date{}",
+                state.chain_name.bold(),
+                skip_note
+            );
         } else {
             println!("Chain {} is already up-to-date.", state.chain_name.bold());
         }

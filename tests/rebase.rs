@@ -1103,7 +1103,11 @@ chain_name
     );
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("⚠️ Did not rebase chain against root branch: master"));
+    // --ignore-root skips the first branch, so the run cannot claim unqualified success:
+    // the summary names the skip (REBASE_AUDIT M6).
     assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("🎉 Rebased chain chain_name (1 branch skipped)"));
+    assert!(!String::from_utf8_lossy(&output.stdout)
         .contains("🎉 Successfully rebased chain chain_name"));
 
     let actual = console::strip_ansi_codes(&String::from_utf8_lossy(&output.stderr))
@@ -1148,9 +1152,10 @@ chain_name
     );
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("⚠️ Did not rebase chain against root branch: master"));
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Chain chain_name is already up-to-date.")
-    );
+    // Second run: nothing left to rebase, and --ignore-root still skips the first branch,
+    // so the up-to-date line carries the skip (REBASE_AUDIT M6).
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("Chain chain_name is up-to-date (1 branch skipped)"));
 
     teardown_git_repo(repo_name);
 }
@@ -3657,9 +3662,17 @@ fn rebase_continue_after_squash_merge_skip_mode() {
         "should show rebase summary, got: {}",
         stdout
     );
+    // The summary describes the whole run, not just this --continue invocation: one branch
+    // was rebased and one was skipped, so it must not read as "already up-to-date"
+    // (REBASE_AUDIT M6).
     assert!(
-        stdout.contains("already up-to-date"),
-        "should show already up-to-date (no new rebase ops during continue), got: {}",
+        stdout.contains("🎉 Rebased chain chain_name (1 branch skipped)"),
+        "should report the rebase with its skip qualified, got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("already up-to-date"),
+        "a run that rebased a branch must not claim it was already up-to-date, got: {}",
         stdout
     );
 
