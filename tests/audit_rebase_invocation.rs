@@ -1,13 +1,16 @@
 //! Characterization tests for the `git rebase` invocation that `git chain rebase` builds.
 //!
-//! # THESE TESTS ASSERT DEFECTIVE BEHAVIOR ON PURPOSE
+//! # SOME OF THESE TESTS ASSERT DEFECTIVE BEHAVIOR ON PURPOSE
 //!
 //! Each test here documents a HIGH severity finding from `REBASE_AUDIT.md` (repo root).
-//! They are *characterization* tests: they pin down what git-chain does **today**, which is
-//! wrong, so they PASS while the bug exists and FAIL the moment it is fixed.
+//! A test that is still *characterizing* pins down what git-chain does **today**, which is
+//! wrong, so it PASSES while the bug exists and FAILS the moment it is fixed.
 //!
 //! **When a fix lands, the corresponding test MUST BE INVERTED**, not deleted. The inverted
 //! assertions are spelled out inline next to each defect assertion, marked `AFTER THE FIX:`.
+//!
+//! Current status: **F1 still characterizes the defect. F2 is FIXED and its test now guards
+//! the fix** — it fails if the isolation regresses.
 //!
 //! ## F1 — merge-base-as-upstream disables git's patch-id skipping
 //!
@@ -20,12 +23,15 @@
 //! The result is that git-chain replays commits whose patch is already on the parent branch,
 //! which conflicts whenever the parent has since touched the same lines.
 //!
-//! ## F2 — `rebase.updateRefs` is never neutralised
+//! ## F2 — `rebase.updateRefs` is neutralised (FIXED)
 //!
-//! None of the three rebase invocations pass `--no-update-refs`, so a user's
-//! `rebase.updateRefs=true` applies. git drags every other ref that points into the replayed
-//! range forward onto the rewritten commits — including the `backup-<chain>/<branch>` refs that
-//! `git chain backup` just created, which is precisely the safety net they exist to provide.
+//! All three rebase invocations now run `git -c rebase.updateRefs=false rebase …`, so a user's
+//! `rebase.updateRefs=true` no longer reaches them. (`-c` is used rather than
+//! `--no-update-refs` because the flag errors on git < 2.38, while the config override is
+//! honored by every version.) Before the fix, git dragged every other ref pointing into the
+//! replayed range forward onto the rewritten commits — including the `backup-<chain>/<branch>`
+//! refs that `git chain backup` had just created, which is precisely the safety net they exist
+//! to provide.
 
 #[path = "common/mod.rs"]
 pub mod common;
@@ -240,7 +246,7 @@ fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
     );
     println!(
         "stdout shows the merge-base SHA as <upstream>: {}",
-        chain_stdout.contains("git rebase --keep-empty --onto b1 ")
+        chain_stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --onto b1 ")
     );
     println!("git status --porcelain: {}", chain_status_porcelain);
     println!(
@@ -278,9 +284,10 @@ fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
         chain_stderr
     );
     // This is the defective invocation itself, echoed by git-chain: `<upstream>` is a raw SHA
-    // (the fork point) rather than the `b1` branch ref.
+    // (the fork point) rather than the `b1` branch ref. (The `-c rebase.updateRefs=false`
+    // prefix is the F2 fix; F1 is unaffected by it.)
     assert!(
-        chain_stdout.contains("git rebase --keep-empty --onto b1 "),
+        chain_stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --onto b1 "),
         "stdout should echo the rebase invocation for b2 but got: {}",
         chain_stdout
     );
@@ -415,13 +422,15 @@ fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
     teardown_git_repo(git_repo_name);
 }
 
-/// F2: `rebase.updateRefs=true` makes `git chain rebase` drag the backup branches forward.
+/// F2 (FIXED): `rebase.updateRefs=true` must not drag the backup branches forward.
 ///
-/// `git chain backup` exists to preserve pre-rebase history. Because the rebase invocation never
-/// passes `--no-update-refs`, git rewrites the `backup-<chain>/<branch>` refs along with the
-/// branches they were meant to protect, so after the rebase they point at the *new* commits.
+/// `git chain backup` exists to preserve pre-rebase history. The three rebase invocations run
+/// `git -c rebase.updateRefs=false rebase …`, so git leaves the `backup-<chain>/<branch>` refs
+/// on the pre-rebase commits even when the user has `rebase.updateRefs=true` configured. This
+/// test fails if that isolation regresses and the backups are rewritten along with the branches
+/// they exist to protect.
 #[test]
-fn audit_f2_update_refs_config_moves_backup_branches() {
+fn audit_f2_update_refs_config_does_not_move_backup_branches() {
     let repo_name = "audit_f2_update_refs";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
@@ -543,8 +552,16 @@ fn audit_f2_update_refs_config_moves_backup_branches() {
         backup_b2_after == b2_after
     );
     println!(
-        "EXPECTED (defect F2): the backup refs are dragged onto the rebased commits and no \
-         longer preserve pre-rebase history"
+        "backup-audit_chain/b1 still records b1's pre-rebase tip: {}",
+        backup_b1_after == b1_before
+    );
+    println!(
+        "backup-audit_chain/b2 still records b2's pre-rebase tip: {}",
+        backup_b2_after == b2_before
+    );
+    println!(
+        "EXPECTED (F2 fixed): the backup refs stay on the pre-rebase commits and still preserve \
+         pre-rebase history"
     );
 
     // Uncomment to stop test execution and debug F2
@@ -560,11 +577,11 @@ fn audit_f2_update_refs_config_moves_backup_branches() {
         rebase_stdout,
         rebase_stderr
     );
-    // git only prints this because git-chain let `rebase.updateRefs` through.
-    // AFTER THE FIX (with --no-update-refs): assert!(!rebase_stderr.contains("--update-refs"), ...)
+    // git prints this only when it rewrites extra refs, which the `-c rebase.updateRefs=false`
+    // prefix prevents.
     assert!(
-        rebase_stderr.contains("Updated the following refs with --update-refs"),
-        "git should report rewriting extra refs but stderr was: {}",
+        !rebase_stderr.contains("Updated the following refs with --update-refs"),
+        "git should not have rewritten any extra refs, but stderr reports that it did: {}",
         rebase_stderr
     );
 
@@ -578,33 +595,38 @@ fn audit_f2_update_refs_config_moves_backup_branches() {
         "b2 should have been rebased onto the new b1"
     );
 
-    // The defect. AFTER THE FIX: assert_eq!(backup_b1_after, backup_b1_before, ...)
-    assert_ne!(
+    // The fix: the backups stay exactly where `git chain backup` put them.
+    assert_eq!(
         backup_b1_after, backup_b1_before,
-        "DEFECT F2 no longer reproduces: backup-audit_chain/b1 still points at the pre-rebase \
-         commit {}. If the fix landed, invert this test.",
-        backup_b1_before
+        "backup-audit_chain/b1 should still point at the pre-rebase commit {} but moved to {}",
+        backup_b1_before, backup_b1_after
     );
-    // AFTER THE FIX: assert_eq!(backup_b2_after, backup_b2_before, ...)
-    assert_ne!(
+    assert_eq!(
         backup_b2_after, backup_b2_before,
-        "DEFECT F2 no longer reproduces: backup-audit_chain/b2 still points at the pre-rebase \
-         commit {}. If the fix landed, invert this test.",
-        backup_b2_before
+        "backup-audit_chain/b2 should still point at the pre-rebase commit {} but moved to {}",
+        backup_b2_before, backup_b2_after
     );
-    // AFTER THE FIX: assert_ne!(backup_b1_after, b1_after, ...)
+    // Stated against the branches themselves: the backups still record the pre-rebase tips.
     assert_eq!(
+        backup_b1_after, b1_before,
+        "backup-audit_chain/b1 should still record b1's pre-rebase tip {}, got {}",
+        b1_before, backup_b1_after
+    );
+    assert_eq!(
+        backup_b2_after, b2_before,
+        "backup-audit_chain/b2 should still record b2's pre-rebase tip {}, got {}",
+        b2_before, backup_b2_after
+    );
+    // And so they are no longer interchangeable with the rebased branches.
+    assert_ne!(
         backup_b1_after, b1_after,
-        "backup-audit_chain/b1 should have been dragged onto b1's new tip, making it useless as \
-         a backup. backup: {}, b1: {}",
-        backup_b1_after, b1_after
+        "backup-audit_chain/b1 should not have been dragged onto b1's new tip {}",
+        b1_after
     );
-    // AFTER THE FIX: assert_ne!(backup_b2_after, b2_after, ...)
-    assert_eq!(
+    assert_ne!(
         backup_b2_after, b2_after,
-        "backup-audit_chain/b2 should have been dragged onto b2's new tip, making it useless as \
-         a backup. backup: {}, b2: {}",
-        backup_b2_after, b2_after
+        "backup-audit_chain/b2 should not have been dragged onto b2's new tip {}",
+        b2_after
     );
 
     teardown_git_repo(repo_name);

@@ -251,11 +251,13 @@ impl GitChain {
             }
 
             let command = format!(
-                "git rebase --keep-empty --onto {} {} {}",
+                "git -c rebase.updateRefs=false rebase --keep-empty --onto {} {} {}",
                 prev_branch_name, common_point, branch.branch_name
             );
 
             let output = Command::new("git")
+                .arg("-c")
+                .arg("rebase.updateRefs=false")
                 .arg("rebase")
                 .arg("--keep-empty")
                 .arg("--onto")
@@ -643,11 +645,13 @@ impl GitChain {
             }
 
             let command = format!(
-                "git rebase --keep-empty --onto {} {} {}",
+                "git -c rebase.updateRefs=false rebase --keep-empty --onto {} {} {}",
                 parent_name, common_point, branch_name
             );
 
             let output = Command::new("git")
+                .arg("-c")
+                .arg("rebase.updateRefs=false")
                 .arg("rebase")
                 .arg("--keep-empty")
                 .arg("--onto")
@@ -957,11 +961,13 @@ impl GitChain {
             }
 
             let command = format!(
-                "git rebase --keep-empty --onto {} {} {}",
+                "git -c rebase.updateRefs=false rebase --keep-empty --onto {} {} {}",
                 parent_name, common_point, branch_name
             );
 
             let output = Command::new("git")
+                .arg("-c")
+                .arg("rebase.updateRefs=false")
                 .arg("rebase")
                 .arg("--keep-empty")
                 .arg("--onto")

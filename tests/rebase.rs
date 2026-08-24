@@ -1679,7 +1679,7 @@ fn rebase_squashed_merge_force_rebase() {
         stdout
     );
     assert!(
-        stdout.contains("git rebase --keep-empty --onto"),
+        stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --onto"),
         "should perform normal rebase, got: {}",
         stdout
     );
