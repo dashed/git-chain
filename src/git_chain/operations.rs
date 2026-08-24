@@ -22,13 +22,26 @@ impl GitChain {
         squashed_merge_handling: SquashedRebaseHandling,
         cleanup_backups: bool,
     ) -> Result<(), Error> {
-        // Check for existing chain rebase state (not for step mode)
-        if !step_rebase && state_exists(&self.repo) {
+        // Check for existing chain rebase state. Step mode keeps no state of its own, so
+        // without this it would happily rebase branches the paused run is still tracking,
+        // invalidating that run's recorded originals and pre-computed merge bases.
+        if state_exists(&self.repo) {
             let existing_state = read_state(&self.repo);
             let chain_info = match &existing_state {
                 Ok(state) => format!(" for chain '{}'", state.chain_name),
                 Err(_) => String::new(),
             };
+
+            if step_rebase {
+                return Err(Error::from_str(&format!(
+                    "🛑 A chain rebase is already in progress{}.\n\
+                     '{} rebase --step' cannot run while it is paused.\n\
+                     Use '{} rebase --continue' to resume it,\n\
+                     or  '{} rebase --abort' to cancel and restore all branches.",
+                    chain_info, self.executable_name, self.executable_name, self.executable_name
+                )));
+            }
+
             return Err(Error::from_str(&format!(
                 "🛑 A chain rebase is already in progress{}.\n\
                  Use '{} rebase --continue' to resume after resolving conflicts,\n\
@@ -178,7 +191,19 @@ impl GitChain {
             // git rebase --onto <onto> <upstream> <branch>
             // git rebase --onto parent_branch fork_point branch.name
 
-            self.checkout_branch(&branch.branch_name)?;
+            // A branch grabbed by another worktree after the pre-flight (or between a pause
+            // and a resume) fails here. Treat it like any other clean failure: mark the
+            // branch, keep the state, and say how to get back.
+            if let Err(e) = self.checkout_branch(&branch.branch_name) {
+                let mut message = e.message().to_string();
+                if !step_rebase {
+                    self.update_branch_state(index, BranchRebaseStatus::Failed)?;
+                    message.push_str("\n\n");
+                    message.push_str(&self.rebase_failure_advice());
+                }
+                let _ = self.checkout_branch(&orig_branch);
+                return Err(Error::from_str(&message));
+            }
 
             let before_sha1 = self.get_commit_hash_of_head()?;
 
@@ -662,7 +687,16 @@ impl GitChain {
                 parent_name.bold()
             );
 
-            self.checkout_branch(&branch_name)?;
+            // Same clean-failure handling as the initial run: a branch that cannot be
+            // checked out (held by another worktree, say) keeps the state and the advice.
+            if let Err(e) = self.checkout_branch(&branch_name) {
+                self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
+                return Err(Error::from_str(&format!(
+                    "{}\n\n{}",
+                    e.message(),
+                    self.rebase_failure_advice()
+                )));
+            }
 
             let before_sha1 = self.get_commit_hash_of_head()?;
 
@@ -981,7 +1015,16 @@ impl GitChain {
                 parent_name.bold()
             );
 
-            self.checkout_branch(&branch_name)?;
+            // Same clean-failure handling as the initial run: a branch that cannot be
+            // checked out (held by another worktree, say) keeps the state and the advice.
+            if let Err(e) = self.checkout_branch(&branch_name) {
+                self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
+                return Err(Error::from_str(&format!(
+                    "{}\n\n{}",
+                    e.message(),
+                    self.rebase_failure_advice()
+                )));
+            }
 
             let before_sha1 = self.get_commit_hash_of_head()?;
 
@@ -1668,6 +1711,42 @@ impl GitChain {
                     branch.branch_name.bold()
                 )));
             }
+        }
+
+        // ensure no branch of the chain is held by another worktree.
+        //
+        // The rebase loop checks out every chain branch in turn, so one held elsewhere
+        // strands the run part-way through. Catching it here — before any ref moves and
+        // before any state file is written — is what makes "then retry" safe advice.
+        // The root branch is not checked: nothing in the rebase ever checks it out.
+        let mut occupied: Vec<String> = Vec::new();
+        for branch in &chain.branches {
+            if let Some(worktree_path) =
+                self.branch_checked_out_in_other_worktree(&branch.branch_name)?
+            {
+                occupied.push(format!(
+                    "  {} — {}",
+                    branch.branch_name.bold(),
+                    worktree_path.display()
+                ));
+            }
+        }
+
+        if !occupied.is_empty() {
+            return Err(Error::from_str(&format!(
+                "Cannot rebase chain {}.\n\
+                 The following chain {} checked out in another worktree:\n\
+                 {}\n\
+                 Remove that worktree (git worktree remove <path>), or prune stale worktrees \
+                 (git worktree prune), then retry.",
+                chain_name.bold(),
+                if occupied.len() == 1 {
+                    "branch is"
+                } else {
+                    "branches are"
+                },
+                occupied.join("\n")
+            )));
         }
 
         // ensure repository is in a clean state

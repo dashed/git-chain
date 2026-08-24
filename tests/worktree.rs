@@ -81,12 +81,26 @@ fn rebase_stops_gracefully_when_chain_branch_in_other_worktree() {
         String::from_utf8_lossy(&worktree_output.stderr)
     );
 
+    // feature-1 rebases before feature-2 in chain order, so if the rebase loop had started
+    // at all it would have rewritten feature-1 before reaching the occupied branch.
+    let feature_1_before = run_git_command(&path_to_repo, vec!["rev-parse", "feature-1"]);
+    let feature_1_oid_before = String::from_utf8_lossy(&feature_1_before.stdout)
+        .trim()
+        .to_string();
+
     // git chain rebase
     let args: Vec<&str> = vec!["rebase"];
     let output = run_test_bin_expect_err(&path_to_repo, args);
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    let feature_1_after = run_git_command(&path_to_repo, vec!["rev-parse", "feature-1"]);
+    let feature_1_oid_after = String::from_utf8_lossy(&feature_1_after.stdout)
+        .trim()
+        .to_string();
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
 
     let status_output = run_git_command(&path_to_repo, vec!["status", "--porcelain"]);
     let status_stdout = String::from_utf8_lossy(&status_output.stdout).to_string();
@@ -98,6 +112,18 @@ fn rebase_stops_gracefully_when_chain_branch_in_other_worktree() {
     println!("EXIT STATUS: {}", output.status.code().unwrap_or(0));
     println!("git status --porcelain: {}", status_stdout);
     println!("Current branch: {}", get_current_branch_name(&repo));
+    println!(
+        "feature-1: before={} after={} (rebased: {})",
+        feature_1_oid_before,
+        feature_1_oid_after,
+        feature_1_oid_before != feature_1_oid_after
+    );
+    println!("STATE FILE EXISTS: {}", state_file.exists());
+    println!(
+        "error names the occupied branch: {}",
+        stderr.contains("feature-2")
+    );
+    println!("EXPECTED: the pre-flight rejects the rebase before any branch is touched");
     println!("======");
 
     // Uncomment to stop test execution and debug this test case
@@ -111,7 +137,7 @@ fn rebase_stops_gracefully_when_chain_branch_in_other_worktree() {
         "Rebase should fail when a chain branch is held by another worktree"
     );
     assert!(
-        stderr.contains("Cannot check out branch 'feature-2'"),
+        stderr.contains("feature-2"),
         "stderr should name the occupied branch but got: {}",
         stderr
     );
@@ -129,6 +155,21 @@ fn rebase_stops_gracefully_when_chain_branch_in_other_worktree() {
         !stderr.contains("panicked"),
         "git-chain should not panic but got: {}",
         stderr
+    );
+    // The pre-flight runs before any state is written, so there is nothing to recover from
+    // and "then retry" is honest advice.
+    assert!(
+        !state_file.exists(),
+        "no chain rebase state should be written when the pre-flight rejects the run, but {} \
+         exists",
+        state_file.display()
+    );
+    // Nothing was rebased: the failure happens before the loop starts.
+    assert_eq!(
+        feature_1_oid_after, feature_1_oid_before,
+        "feature-1 should not have been rebased before the pre-flight rejected the run, but it \
+         moved from {} to {}",
+        feature_1_oid_before, feature_1_oid_after
     );
     assert!(
         status_stdout.is_empty(),

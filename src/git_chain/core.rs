@@ -126,7 +126,7 @@ impl GitChain {
     /// inspect the HEAD file of every worktree attached to this repository.
     /// Reading HEAD directly also covers worktrees whose directory is missing
     /// but which are still registered, since they would still block `set_head`.
-    fn branch_checked_out_in_other_worktree(
+    pub fn branch_checked_out_in_other_worktree(
         &self,
         branch_name: &str,
     ) -> Result<Option<PathBuf>, Error> {
