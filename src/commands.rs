@@ -76,14 +76,20 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
     let git_chain = GitChain::init()?;
 
     match arg_matches.subcommand() {
-        ("init", Some(sub_matches)) => {
+        Some(("init", sub_matches)) => {
             // Initialize the current branch to a chain.
 
-            let chain_name = sub_matches.value_of("chain_name").unwrap().to_string();
-            let root_branch = sub_matches.value_of("root_branch");
+            let chain_name = sub_matches
+                .get_one::<String>("chain_name")
+                .map(|s| s.as_str())
+                .unwrap()
+                .to_string();
+            let root_branch = sub_matches
+                .get_one::<String>("root_branch")
+                .map(|s| s.as_str());
 
-            let before_branch = sub_matches.value_of("before");
-            let after_branch = sub_matches.value_of("after");
+            let before_branch = sub_matches.get_one::<String>("before").map(|s| s.as_str());
+            let after_branch = sub_matches.get_one::<String>("after").map(|s| s.as_str());
 
             let branch_name = git_chain.get_current_branch_name()?;
 
@@ -123,7 +129,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
 
-            let sort_option = if sub_matches.is_present("first") {
+            let sort_option = if sub_matches.get_flag("first") {
                 SortBranch::First
             } else {
                 parse_sort_option(&git_chain, &chain_name, before_branch, after_branch)?
@@ -131,10 +137,12 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             git_chain.init_chain(&chain_name, &root_branch, &branch_name, sort_option)?
         }
-        ("remove", Some(sub_matches)) => {
+        Some(("remove", sub_matches)) => {
             // Remove current branch from its chain.
 
-            let chain_name = sub_matches.value_of("chain_name");
+            let chain_name = sub_matches
+                .get_one::<String>("chain_name")
+                .map(|s| s.as_str());
 
             let branch_name = git_chain.get_current_branch_name()?;
 
@@ -165,19 +173,21 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             git_chain.remove_branch_from_chain(branch_name)?
         }
-        ("list", Some(sub_matches)) => {
+        Some(("list", sub_matches)) => {
             // List all chains.
             let current_branch = git_chain.get_current_branch_name()?;
-            let show_prs = sub_matches.is_present("pr");
+            let show_prs = sub_matches.get_flag("pr");
             git_chain.list_chains(&current_branch, show_prs)?;
         }
-        ("move", Some(sub_matches)) => {
+        Some(("move", sub_matches)) => {
             // Move current branch or chain.
 
-            let before_branch = sub_matches.value_of("before");
-            let after_branch = sub_matches.value_of("after");
-            let root_branch = sub_matches.value_of("root");
-            let chain_name = sub_matches.value_of("chain_name");
+            let before_branch = sub_matches.get_one::<String>("before").map(|s| s.as_str());
+            let after_branch = sub_matches.get_one::<String>("after").map(|s| s.as_str());
+            let root_branch = sub_matches.get_one::<String>("root").map(|s| s.as_str());
+            let chain_name = sub_matches
+                .get_one::<String>("chain_name")
+                .map(|s| s.as_str());
 
             let branch_name = git_chain.get_current_branch_name()?;
 
@@ -257,16 +267,16 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 }
             };
         }
-        ("rebase", Some(sub_matches)) => {
-            let cleanup_backups = sub_matches.is_present("cleanup_backups");
+        Some(("rebase", sub_matches)) => {
+            let cleanup_backups = sub_matches.get_flag("cleanup_backups");
 
-            if sub_matches.is_present("status_rebase") {
+            if sub_matches.get_flag("status_rebase") {
                 git_chain.rebase_status()?;
-            } else if sub_matches.is_present("continue_rebase") {
+            } else if sub_matches.get_flag("continue_rebase") {
                 git_chain.rebase_continue(cleanup_backups)?;
-            } else if sub_matches.is_present("skip_rebase") {
+            } else if sub_matches.get_flag("skip_rebase") {
                 git_chain.rebase_skip(cleanup_backups)?;
-            } else if sub_matches.is_present("abort_rebase") {
+            } else if sub_matches.get_flag("abort_rebase") {
                 git_chain.rebase_abort()?;
             } else {
                 // Rebase all branches for the current chain.
@@ -281,9 +291,12 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 };
 
                 if Chain::chain_exists(&git_chain, &branch.chain_name)? {
-                    let step_rebase = sub_matches.is_present("step");
-                    let ignore_root = sub_matches.is_present("ignore_root");
-                    let squashed_merge_handling = match sub_matches.value_of("squashed_merge") {
+                    let step_rebase = sub_matches.get_flag("step");
+                    let ignore_root = sub_matches.get_flag("ignore_root");
+                    let squashed_merge_handling = match sub_matches
+                        .get_one::<String>("squashed_merge")
+                        .map(|s| s.as_str())
+                    {
                         Some("skip") => SquashedRebaseHandling::Skip,
                         Some("rebase") => SquashedRebaseHandling::Rebase,
                         _ => SquashedRebaseHandling::Reset,
@@ -302,7 +315,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 }
             }
         }
-        ("backup", Some(_sub_matches)) => {
+        Some(("backup", _sub_matches)) => {
             // Back up all branches of the current chain.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -317,7 +330,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             git_chain.backup(&branch.chain_name)?;
         }
-        ("push", Some(sub_matches)) => {
+        Some(("push", sub_matches)) => {
             // Push all branches of the current chain to their upstreams.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -330,10 +343,10 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 BranchSearchResult::Branch(branch) => branch,
             };
 
-            let force_push = sub_matches.is_present("force");
+            let force_push = sub_matches.get_flag("force");
             git_chain.push(&branch.chain_name, force_push)?;
         }
-        ("prune", Some(sub_matches)) => {
+        Some(("prune", sub_matches)) => {
             // Prune any branches of the current chain.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -346,14 +359,18 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 BranchSearchResult::Branch(branch) => branch,
             };
 
-            let dry_run = sub_matches.is_present("dry_run");
+            let dry_run = sub_matches.get_flag("dry_run");
 
             git_chain.prune(&branch.chain_name, dry_run)?;
         }
-        ("rename", Some(sub_matches)) => {
+        Some(("rename", sub_matches)) => {
             // Rename current chain.
 
-            let new_chain_name = sub_matches.value_of("chain_name").unwrap().to_string();
+            let new_chain_name = sub_matches
+                .get_one::<String>("chain_name")
+                .map(|s| s.as_str())
+                .unwrap()
+                .to_string();
 
             let branch_name = git_chain.get_current_branch_name()?;
 
@@ -390,14 +407,22 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
-        ("setup", Some(sub_matches)) => {
+        Some(("setup", sub_matches)) => {
             // Set up a chain.
 
-            let chain_name = sub_matches.value_of("chain_name").unwrap().to_string();
-            let root_branch = sub_matches.value_of("root_branch").unwrap().to_string();
+            let chain_name = sub_matches
+                .get_one::<String>("chain_name")
+                .map(|s| s.as_str())
+                .unwrap()
+                .to_string();
+            let root_branch = sub_matches
+                .get_one::<String>("root_branch")
+                .map(|s| s.as_str())
+                .unwrap()
+                .to_string();
 
             let branches: Vec<String> = sub_matches
-                .values_of("branch")
+                .get_many::<String>("branch")
                 .unwrap()
                 .map(|x| x.to_string())
                 .collect();
@@ -466,7 +491,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let current_branch = git_chain.get_current_branch_name()?;
             chain.display_list(&git_chain, &current_branch, false)?;
         }
-        ("first", Some(_sub_matches)) => {
+        Some(("first", _sub_matches)) => {
             // Switch to the first branch of the chain.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -500,7 +525,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
-        ("last", Some(_sub_matches)) => {
+        Some(("last", _sub_matches)) => {
             // Switch to the last branch of the chain.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -534,7 +559,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
-        ("next", Some(_sub_matches)) => {
+        Some(("next", _sub_matches)) => {
             // Switch to the next branch of the chain.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -581,7 +606,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
-        ("prev", Some(_sub_matches)) => {
+        Some(("prev", _sub_matches)) => {
             // Switch to the previous branch of the chain.
 
             let branch_name = git_chain.get_current_branch_name()?;
@@ -627,7 +652,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 process::exit(1);
             }
         }
-        ("pr", Some(sub_matches)) => {
+        Some(("pr", sub_matches)) => {
             let branch_name = git_chain.get_current_branch_name()?;
 
             let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
@@ -638,17 +663,17 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 BranchSearchResult::Branch(branch) => branch,
             };
 
-            let draft = sub_matches.is_present("draft");
+            let draft = sub_matches.get_flag("draft");
             git_chain.pr(&branch.chain_name, draft)?;
         }
-        ("status", Some(sub_matches)) => {
-            let show_prs = sub_matches.is_present("pr");
+        Some(("status", sub_matches)) => {
+            let show_prs = sub_matches.get_flag("pr");
             git_chain.run_status(show_prs)?;
         }
-        ("merge", Some(sub_matches)) => {
+        Some(("merge", sub_matches)) => {
             // Comprehensive merge with enhanced configuration
             // Determine which chain to use
-            let chain_name = match sub_matches.value_of("chain") {
+            let chain_name = match sub_matches.get_one::<String>("chain").map(|s| s.as_str()) {
                 Some(name) => {
                     // User specified a chain explicitly
                     if !Chain::chain_exists(&git_chain, name)? {
@@ -682,28 +707,34 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let mut merge_flags = Vec::new();
 
             // Handle git merge flags
-            if sub_matches.is_present("no_ff") {
+            if sub_matches.get_flag("no_ff") {
                 merge_flags.push("--no-ff".to_string());
-            } else if sub_matches.is_present("ff_only") {
+            } else if sub_matches.get_flag("ff_only") {
                 merge_flags.push("--ff-only".to_string());
             }
 
-            if sub_matches.is_present("squash") {
+            if sub_matches.get_flag("squash") {
                 merge_flags.push("--squash".to_string());
             }
 
-            if let Some(strategy) = sub_matches.value_of("strategy") {
+            if let Some(strategy) = sub_matches
+                .get_one::<String>("strategy")
+                .map(|s| s.as_str())
+            {
                 merge_flags.push(format!("--strategy={}", strategy));
             }
 
-            if let Some(strategy_options) = sub_matches.values_of("strategy_option") {
+            if let Some(strategy_options) = sub_matches.get_many::<String>("strategy_option") {
                 for option in strategy_options {
                     merge_flags.push(format!("--strategy-option={}", option));
                 }
             }
 
             // Determine squashed merge handling
-            let squashed_merge_handling = match sub_matches.value_of("squashed_merge") {
+            let squashed_merge_handling = match sub_matches
+                .get_one::<String>("squashed_merge")
+                .map(|s| s.as_str())
+            {
                 Some("reset") => SquashedMergeHandling::Reset,
                 Some("skip") => SquashedMergeHandling::Skip,
                 Some("merge") => SquashedMergeHandling::Merge,
@@ -711,14 +742,17 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             };
 
             // Determine report level
-            let report_level = match sub_matches.value_of("report_level") {
+            let report_level = match sub_matches
+                .get_one::<String>("report_level")
+                .map(|s| s.as_str())
+            {
                 Some("minimal") => ReportLevel::Minimal,
                 Some("standard") => ReportLevel::Standard,
                 Some("detailed") => ReportLevel::Detailed,
                 _ => {
-                    if sub_matches.is_present("no_report") {
+                    if sub_matches.get_flag("no_report") {
                         ReportLevel::Minimal
-                    } else if sub_matches.is_present("detailed_report") {
+                    } else if sub_matches.get_flag("detailed_report") {
                         ReportLevel::Detailed
                     } else {
                         ReportLevel::Standard
@@ -728,19 +762,22 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
 
             // Build the full options struct
             let options = MergeOptions {
-                ignore_root: sub_matches.is_present("ignore_root"),
+                ignore_root: sub_matches.get_flag("ignore_root"),
                 merge_flags,
-                use_fork_point: !sub_matches.is_present("no_fork_point"),
+                use_fork_point: !sub_matches.get_flag("no_fork_point"),
                 squashed_merge_handling,
-                verbose: sub_matches.is_present("verbose"),
-                return_to_original: !sub_matches.is_present("stay"),
-                simple_mode: sub_matches.is_present("simple"),
+                verbose: sub_matches.get_flag("verbose"),
+                return_to_original: !sub_matches.get_flag("stay"),
+                simple_mode: sub_matches.get_flag("simple"),
                 report_level,
             };
 
             // Execute the merge with the configured options
             git_chain.merge_chain_with_options(&chain_name, options)?;
         }
+        // No subcommand: display the status of the current branch and its chain.
+        // clap rejects unknown subcommands before this point, so the only value
+        // reaching this arm is None.
         _ => {
             git_chain.run_status(false)?;
         }

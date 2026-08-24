@@ -1,138 +1,136 @@
 use std::ffi::OsString;
 
-use clap::{App, Arg, ArgMatches, SubCommand};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::executable_name;
 
-pub fn parse_arg_matches<'a, I, T>(arguments: I) -> ArgMatches<'a>
+pub fn parse_arg_matches<I, T>(arguments: I) -> ArgMatches
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let init_subcommand = SubCommand::with_name("init")
+    let init_subcommand = Command::new("init")
         .about("Initialize the current branch to a chain.")
         .arg(
-            Arg::with_name("before")
-                .short("b")
+            Arg::new("before")
+                .short('b')
                 .long("before")
                 .value_name("branch_name")
                 .help("Sort current branch before another branch.")
                 .conflicts_with("after")
                 .conflicts_with("first")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("after")
-                .short("a")
+            Arg::new("after")
+                .short('a')
                 .long("after")
                 .value_name("branch_name")
                 .help("Sort current branch after another branch.")
                 .conflicts_with("before")
                 .conflicts_with("first")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("first")
-                .short("f")
+            Arg::new("first")
+                .short('f')
                 .long("first")
                 .help("Sort current branch as the first branch of the chain.")
                 .conflicts_with("before")
                 .conflicts_with("after")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("chain_name")
+            Arg::new("chain_name")
                 .help("The name of the chain.")
                 .required(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("root_branch")
+            Arg::new("root_branch")
                 .help("The root branch which the chain of branches will merge into.")
                 .required(false)
                 .index(2),
         );
 
-    let remove_subcommand = SubCommand::with_name("remove")
+    let remove_subcommand = Command::new("remove")
         .about("Remove current branch from its chain.")
         .arg(
-            Arg::with_name("chain_name")
-                .short("c")
+            Arg::new("chain_name")
+                .short('c')
                 .long("chain")
                 .value_name("chain_name")
                 .help("Delete chain by removing all of its branches.")
-                .takes_value(true),
+                .action(ArgAction::Set),
         );
 
-    let move_subcommand = SubCommand::with_name("move")
+    let move_subcommand = Command::new("move")
         .about("Move current branch or chain.")
         .arg(
-            Arg::with_name("before")
-                .short("b")
+            Arg::new("before")
+                .short('b')
                 .long("before")
                 .value_name("branch_name")
                 .help("Sort current branch before another branch.")
                 .conflicts_with("after")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("after")
-                .short("a")
+            Arg::new("after")
+                .short('a')
                 .long("after")
                 .value_name("branch_name")
                 .help("Sort current branch after another branch.")
                 .conflicts_with("before")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("root")
-                .short("r")
+            Arg::new("root")
+                .short('r')
                 .long("root")
                 .value_name("root_branch")
                 .help("Set root branch of current branch and the chain it is a part of.")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("chain_name")
-                .short("c")
+            Arg::new("chain_name")
+                .short('c')
                 .long("chain")
                 .value_name("chain_name")
                 .help("Move current branch to another chain.")
                 .conflicts_with("root")
-                .takes_value(true),
+                .action(ArgAction::Set),
         );
 
-    let rebase_subcommand = SubCommand::with_name("rebase")
+    let rebase_subcommand = Command::new("rebase")
         .about("Rebase all branches for the current chain.")
         .arg(
-            Arg::with_name("step")
-                .short("s")
+            Arg::new("step")
+                .short('s')
                 .long("step")
-                .value_name("step")
                 .help("Stop at the first rebase.")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("ignore_root")
-                .short("i")
+            Arg::new("ignore_root")
+                .short('i')
                 .long("ignore-root")
-                .value_name("ignore_root")
                 .help("Rebase each branch of the chain except for the first branch.")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("squashed_merge")
+            Arg::new("squashed_merge")
                 .long("squashed-merge")
                 .help("How to handle squashed merges [default: reset]")
-                .possible_values(&["reset", "skip", "rebase"])
+                .value_parser(["reset", "skip", "rebase"])
                 .default_value("reset")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("continue_rebase")
+            Arg::new("continue_rebase")
                 .long("continue")
                 .help("Continue the chain rebase after resolving conflicts")
-                .conflicts_with_all(&[
+                .conflicts_with_all([
                     "step",
                     "ignore_root",
                     "squashed_merge",
@@ -140,13 +138,13 @@ where
                     "skip_rebase",
                     "status_rebase",
                 ])
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("abort_rebase")
+            Arg::new("abort_rebase")
                 .long("abort")
                 .help("Abort the chain rebase and restore all branches to their original state")
-                .conflicts_with_all(&[
+                .conflicts_with_all([
                     "step",
                     "ignore_root",
                     "squashed_merge",
@@ -154,13 +152,13 @@ where
                     "skip_rebase",
                     "status_rebase",
                 ])
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("skip_rebase")
+            Arg::new("skip_rebase")
                 .long("skip")
                 .help("Skip the current conflicted branch and continue with the rest of the chain")
-                .conflicts_with_all(&[
+                .conflicts_with_all([
                     "step",
                     "ignore_root",
                     "squashed_merge",
@@ -168,13 +166,13 @@ where
                     "abort_rebase",
                     "status_rebase",
                 ])
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("status_rebase")
+            Arg::new("status_rebase")
                 .long("status")
                 .help("Show the current chain rebase state")
-                .conflicts_with_all(&[
+                .conflicts_with_all([
                     "step",
                     "ignore_root",
                     "squashed_merge",
@@ -182,203 +180,198 @@ where
                     "abort_rebase",
                     "skip_rebase",
                 ])
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("cleanup_backups")
+            Arg::new("cleanup_backups")
                 .long("cleanup-backups")
                 .help("Delete backup branches after successful rebase")
-                .conflicts_with_all(&["abort_rebase", "status_rebase"])
-                .takes_value(false),
+                .conflicts_with_all(["abort_rebase", "status_rebase"])
+                .action(ArgAction::SetTrue),
         );
 
-    let push_subcommand = SubCommand::with_name("push")
+    let push_subcommand = Command::new("push")
         .about("Push all branches of the current chain to their upstreams.")
         .arg(
-            Arg::with_name("force")
-                .short("f")
+            Arg::new("force")
+                .short('f')
                 .long("force")
-                .value_name("force")
                 .help("Push branches with --force-with-lease")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         );
 
-    let prune_subcommand = SubCommand::with_name("prune")
+    let prune_subcommand = Command::new("prune")
         .about("Prune any branches of the current chain that are ancestors of the root branch.")
         .arg(
-            Arg::with_name("dry_run")
-                .short("d")
+            Arg::new("dry_run")
+                .short('d')
                 .long("dry-run")
-                .value_name("dry_run")
                 .help("Output branches that will be pruned.")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         );
 
-    let rename_subcommand = SubCommand::with_name("rename")
-        .about("Rename current chain.")
-        .arg(
-            Arg::with_name("chain_name")
-                .help("The new name of the chain.")
-                .required(true)
-                .index(1),
-        );
+    let rename_subcommand = Command::new("rename").about("Rename current chain.").arg(
+        Arg::new("chain_name")
+            .help("The new name of the chain.")
+            .required(true)
+            .index(1),
+    );
 
-    let setup_subcommand = SubCommand::with_name("setup")
+    let setup_subcommand = Command::new("setup")
         .about("Set up a chain.")
         .arg(
-            Arg::with_name("chain_name")
+            Arg::new("chain_name")
                 .help("The new name of the chain.")
                 .required(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("root_branch")
+            Arg::new("root_branch")
                 .help("The root branch which the chain of branches will merge into.")
                 .required(true)
                 .index(2),
         )
         .arg(
-            Arg::with_name("branch")
+            Arg::new("branch")
                 .help("A branch to add to the chain")
                 .required(true)
-                .multiple(true)
+                .num_args(1..)
                 .index(3),
         );
 
-    let pr_subcommand = SubCommand::with_name("pr")
+    let pr_subcommand = Command::new("pr")
         .about("Create a pull request for each branch in the current chain using the GitHub CLI.")
         .arg(
-            Arg::with_name("draft")
-                .short("d")
+            Arg::new("draft")
+                .short('d')
                 .long("draft")
-                .value_name("draft")
                 .help("Create pull requests as drafts")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         );
 
-    let status_subcommand = SubCommand::with_name("status")
+    let status_subcommand = Command::new("status")
         .about("Display the status of the current branch and its chain.")
         .arg(
-            Arg::with_name("pr")
-                .short("p")
+            Arg::new("pr")
+                .short('p')
                 .long("pr")
                 .help("Show open pull requests for the branch")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         );
 
-    let list_subcommand = SubCommand::with_name("list").about("List all chains.").arg(
-        Arg::with_name("pr")
-            .short("p")
+    let list_subcommand = Command::new("list").about("List all chains.").arg(
+        Arg::new("pr")
+            .short('p')
             .long("pr")
             .help("Show open pull requests for each branch in the chains")
-            .takes_value(false),
+            .action(ArgAction::SetTrue),
     );
 
     // Merge with comprehensive options
-    let merge_subcommand = SubCommand::with_name("merge")
+    let merge_subcommand = Command::new("merge")
         .about("Cascade merges through the branch chain by merging each parent branch into its child branch, preserving commit history.")
         .arg(
-            Arg::with_name("ignore_root")
-                .short("i")
+            Arg::new("ignore_root")
+                .short('i')
                 .long("ignore-root")
                 .help("Don't merge the root branch into the first branch")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("verbose")
-                .short("v")
+            Arg::new("verbose")
+                .short('v')
                 .long("verbose")
                 .help("Provides detailed output during merging process")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("simple")
-                .short("s")
+            Arg::new("simple")
+                .short('s')
                 .long("simple")
                 .help("Use simple merge mode")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("no_report")
-                .short("n")
+            Arg::new("no_report")
+                .short('n')
                 .long("no-report")
                 .help("Suppress the merge summary report")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("detailed_report")
-                .short("d")
+            Arg::new("detailed_report")
+                .short('d')
                 .long("detailed-report")
                 .help("Show a more detailed merge report")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("fork_point")
-                .short("f")
+            Arg::new("fork_point")
+                .short('f')
                 .long("fork-point")
                 .help("Use git merge-base --fork-point for finding common ancestors [default]")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("no_fork_point")
+            Arg::new("no_fork_point")
                 .long("no-fork-point")
                 .help("Don't use fork-point detection, use regular merge-base")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("stay")
+            Arg::new("stay")
                 .long("stay")
                 .help("Don't return to the original branch after merging")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("squashed_merge")
+            Arg::new("squashed_merge")
                 .long("squashed-merge")
                 .help("How to handle squashed merges [default: reset]")
-                .possible_values(&["reset", "skip", "merge"])
+                .value_parser(["reset", "skip", "merge"])
                 .default_value("reset")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("chain")
+            Arg::new("chain")
                 .long("chain")
                 .help("Specify a chain to merge other than the current one")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("report_level")
+            Arg::new("report_level")
                 .long("report-level")
                 .help("Set the detail level for the merge report [default: standard]")
-                .possible_values(&["minimal", "standard", "detailed"])
+                .value_parser(["minimal", "standard", "detailed"])
                 .default_value("standard")
-                .takes_value(true),
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("ff")
+            Arg::new("ff")
                 .long("ff")
                 .help("Allow fast-forward merges [default]")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("no_ff")
+            Arg::new("no_ff")
                 .long("no-ff")
                 .help("Create a merge commit even when fast-forward is possible")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("ff_only")
+            Arg::new("ff_only")
                 .long("ff-only")
                 .help("Only allow fast-forward merges")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("squash")
+            Arg::new("squash")
                 .long("squash")
                 .help("Create a single commit instead of doing a merge")
-                .takes_value(false),
+                .action(ArgAction::SetTrue),
         )
         .arg(
-            Arg::with_name("strategy")
+            Arg::new("strategy")
                 .long("strategy")
                 .help("Use the specified merge strategy (passed directly to 'git merge' as --strategy=<STRATEGY>)")
                 .long_help(
@@ -413,11 +406,11 @@ ours:
 subtree:
     Modified 'ort' strategy. When merging trees A and B, if B corresponds
     to a subtree of A, B is adjusted to match A's tree structure.")
-                .possible_values(&["ort", "recursive", "resolve", "octopus", "ours", "subtree"])
-                .takes_value(true),
+                .value_parser(["ort", "recursive", "resolve", "octopus", "ours", "subtree"])
+                .action(ArgAction::Set),
         )
         .arg(
-            Arg::with_name("strategy_option")
+            Arg::new("strategy_option")
                 .long("strategy-option")
                 .help("Pass merge strategy specific option (passed directly to 'git merge' as --strategy-option=<OPTION>)")
                 .long_help(
@@ -477,11 +470,11 @@ Examples:
     --strategy-option=patience
     --strategy-option=diff-algorithm=histogram
     --strategy-option=find-renames=70")
-                .takes_value(true)
-                .multiple(true),
+                .action(ArgAction::Append)
+                .num_args(1..),
         );
 
-    let arg_matches = App::new("git-chain")
+    Command::new("git-chain")
         .bin_name(executable_name())
         .version(env!("CARGO_PKG_VERSION"))
         .author("Alberto Leal <mailforalberto@gmail.com>")
@@ -498,18 +491,10 @@ Examples:
         .subcommand(status_subcommand)
         .subcommand(merge_subcommand)
         .subcommand(list_subcommand)
-        .subcommand(
-            SubCommand::with_name("backup").about("Back up all branches of the current chain."),
-        )
-        .subcommand(
-            SubCommand::with_name("first").about("Switch to the first branch of the chain."),
-        )
-        .subcommand(SubCommand::with_name("last").about("Switch to the last branch of the chain."))
-        .subcommand(SubCommand::with_name("next").about("Switch to the next branch of the chain."))
-        .subcommand(
-            SubCommand::with_name("prev").about("Switch to the previous branch of the chain."),
-        )
-        .get_matches_from(arguments);
-
-    arg_matches
+        .subcommand(Command::new("backup").about("Back up all branches of the current chain."))
+        .subcommand(Command::new("first").about("Switch to the first branch of the chain."))
+        .subcommand(Command::new("last").about("Switch to the last branch of the chain."))
+        .subcommand(Command::new("next").about("Switch to the next branch of the chain."))
+        .subcommand(Command::new("prev").about("Switch to the previous branch of the chain."))
+        .get_matches_from(arguments)
 }

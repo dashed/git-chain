@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- After a chain rebase completes, git-chain now suggests running `git chain prune` when chain branches have become ancestors of the root branch (e.g. after a squash-merge reset)
+- Uncommitted-changes errors now name the branch the changes are on
+- Checking out a branch held by another worktree now fails with a clean error naming the worktree, instead of panicking and leaving phantom changes in the working tree
+- Updated all dependencies: git2 0.21 (libgit2 1.9.7), clap 4, colored 3, rand 0.10, regex 1.13, serde_json 1.0.151, assert_cmd 2.2, console 0.16
+  - clap 4 changes the CLI help/error text style (`Usage:` casing, merged `Options:` section, lowercase error messages) and CLI parse errors now exit with code 2 instead of 1; command behavior is unchanged
+  - Drops the unmaintained `atty` (RUSTSEC-2021-0145) and `ansi_term` transitive dependencies and resolves all open security advisories
 - Rebase now shows progress reporting during chain rebase: `📌 [2/5] Rebasing feature-auth onto main...`
 - Rebase completion now shows a summary report with counts by category (rebased, skipped, squash-reset)
 - `rebase --continue` and `rebase --skip` now show progress reporting and summary report

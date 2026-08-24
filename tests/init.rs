@@ -30,7 +30,7 @@ fn init_subcommand() {
 
     assert!(String::from_utf8_lossy(&output.stdout).is_empty());
     assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("The following required arguments were not provided"));
+        .contains("the following required arguments were not provided"));
     assert!(String::from_utf8_lossy(&output.stderr).contains("<chain_name>"));
 
     // init subcommand with chain name, but no root branch
