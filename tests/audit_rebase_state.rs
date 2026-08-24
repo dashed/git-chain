@@ -28,6 +28,8 @@
 //! | `audit_h3_quit_clears_a_healthy_paused_rebase`           | H3 · HIGH     | guard   |
 //! | `audit_h3_unsupported_state_version_is_rejected`         | H3/L2         | guard   |
 //! | `audit_h4_successful_run_survives_a_failed_switch_back`  | H4 · HIGH     | guard   |
+//! | `audit_m2_abort_resets_the_working_tree_it_owns`         | M2 · MEDIUM   | guard   |
+//! | `audit_m2_abort_leaves_an_unrestored_branch_alone`       | M2 · MEDIUM   | guard   |
 //!
 //! Rows marked "guard" were written directly against the fixed behavior — they
 //! never characterized a defect, so there is nothing to invert.
@@ -1529,6 +1531,353 @@ fn audit_h4_successful_run_survives_a_failed_switch_back() {
     );
 
     std::fs::remove_dir_all(&worktree_dir).ok();
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
+// M2 · MEDIUM — `--abort` must reset the working tree it owns
+// ---------------------------------------------------------------------------
+
+/// Guards **M2**: after the user follows git-chain's own conflict instructions
+/// (`git add`, `git rebase --continue`), the resolved content sits in the working tree
+/// and index. Restoring the branch ref without resetting them left that content staged —
+/// so every later git-chain command was blocked by the dirty check, and a stray
+/// `git commit` would have re-applied the work the abort had just discarded.
+///
+/// `rebase_abort` now hard-resets the working tree of a branch it restored, exactly as
+/// git's own `rebase --abort` does. Untracked files are not part of that contract and
+/// must survive, which this test asserts with a scratch file created just before the
+/// abort.
+#[test]
+fn audit_m2_abort_resets_the_working_tree_it_owns() {
+    let repo_name = "audit_m2_abort_resets_worktree";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // some_branch_1 edits the file master is about to change, so the rebase stops on it.
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "shared.txt", "branch 1 version");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "commit on some_branch_2");
+    };
+
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "shared.txt", "master version");
+        commit_all(&repo, "conflicting commit on master");
+    };
+
+    checkout_branch(&repo, "some_branch_1");
+    let branch_1_original = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_text = combined_output(&rebase_output);
+
+    assert!(
+        !rebase_output.status.success(),
+        "the rebase should stop on the conflict in some_branch_1, got: {}",
+        rebase_text
+    );
+
+    // The user does exactly what git-chain's conflict message tells them to.
+    create_new_file(&path_to_repo, "shared.txt", "resolved version");
+    let add_output = run_git_command(&path_to_repo, vec!["add", "shared.txt"]);
+    assert!(
+        add_output.status.success(),
+        "staging the resolved file should succeed, got: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    let git_continue = run_git_command(
+        &path_to_repo,
+        vec!["-c", "core.editor=true", "rebase", "--continue"],
+    );
+    assert!(
+        git_continue.status.success(),
+        "git rebase --continue should succeed, got: {}",
+        combined_output(&git_continue)
+    );
+
+    // An untracked scratch file, which `git reset --hard` must not remove.
+    create_new_file(&path_to_repo, "untracked_scratch.txt", "scratch");
+
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    let tracked_status = run_git_command(
+        &path_to_repo,
+        vec!["status", "--porcelain", "--untracked-files=no"],
+    );
+    let tracked_porcelain = String::from_utf8_lossy(&tracked_status.stdout).to_string();
+
+    let shared_contents =
+        std::fs::read_to_string(path_to_repo.join("shared.txt")).unwrap_or_default();
+    let scratch_survived = path_to_repo.join("untracked_scratch.txt").exists();
+
+    println!("=== M2 DIAGNOSTICS: abort after a user-resolved conflict ===");
+    println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!(
+        "some_branch_1: original={} after abort={} (restored: {})",
+        branch_1_original,
+        branch_1_after,
+        branch_1_original == branch_1_after
+    );
+    println!(
+        "tracked porcelain after abort: [{}]",
+        tracked_porcelain.trim()
+    );
+    println!("shared.txt contents: [{}]", shared_contents.trim());
+    println!("untracked scratch file survived: {}", scratch_survived);
+    println!("EXPECTED: refs restored, tree clean, untracked file untouched");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M2 abort resets working tree");
+    // assert!(false, "abort output: {}", abort_text);
+    // assert!(false, "porcelain: [{}]", tracked_porcelain);
+    // assert!(false, "shared.txt: [{}]", shared_contents);
+
+    assert!(
+        abort_output.status.success(),
+        "rebase --abort should succeed, got: {}",
+        abort_text
+    );
+    assert_eq!(
+        branch_1_after, branch_1_original,
+        "some_branch_1 should be restored to {}, got {}",
+        branch_1_original, branch_1_after
+    );
+    // The core of M2: nothing of the abandoned resolution is left staged or in the tree.
+    assert!(
+        tracked_porcelain.is_empty(),
+        "the working tree should be clean after the abort, but git status shows: {}",
+        tracked_porcelain
+    );
+    assert_eq!(
+        shared_contents.trim(),
+        "branch 1 version",
+        "shared.txt should hold the pre-rebase content again, got: {}",
+        shared_contents
+    );
+    assert!(
+        abort_text.contains("Reset the working tree of some_branch_1"),
+        "the abort should report resetting the working tree, got: {}",
+        abort_text
+    );
+    // `git reset --hard` does not touch untracked files, and neither must the abort.
+    assert!(
+        scratch_survived,
+        "the untracked scratch file should survive the abort"
+    );
+
+    // The follow-up command is no longer blocked by the dirty check. It stops on the same
+    // genuine conflict as before, which is the point: it got far enough to try.
+    let fresh_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let fresh_text = combined_output(&fresh_output);
+
+    println!("FRESH REBASE OUTPUT: {}", fresh_text);
+    println!(
+        "blocked by the dirty check: {}",
+        fresh_text.contains("uncommitted changes")
+    );
+    println!(
+        "reached the rebase loop: {}",
+        fresh_text.contains("Rebasing some_branch_1")
+    );
+
+    assert!(
+        !fresh_text.contains("uncommitted changes"),
+        "a follow-up rebase should not be blocked by uncommitted changes, got: {}",
+        fresh_text
+    );
+    assert!(
+        fresh_text.contains("Rebasing some_branch_1"),
+        "a follow-up rebase should reach the rebase loop, got: {}",
+        fresh_text
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// The other side of the M2 contract: a branch the abort deliberately did NOT restore
+/// keeps its working tree, uncommitted changes and all.
+///
+/// `some_branch_3` is still `Pending` — the run never reached it — and the user moved it
+/// during the pause, so abort leaves it alone. Resetting it would discard work the rebase
+/// never had anything to do with, which is the H2 mistake in a different coat.
+#[test]
+fn audit_m2_abort_leaves_an_unrestored_branch_alone() {
+    let repo_name = "audit_m2_abort_leaves_branch_alone";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    // some_branch_2 collides with master, so the run stops there and never reaches
+    // some_branch_3.
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "shared.txt", "branch 2 version");
+        commit_all(&repo, "commit on some_branch_2");
+    };
+
+    {
+        let branch_name = "some_branch_3";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_3.txt", "contents 3");
+        commit_all(&repo, "commit on some_branch_3");
+    };
+
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+        "some_branch_3",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "shared.txt", "master version");
+        commit_all(&repo, "conflicting commit on master");
+    };
+
+    checkout_branch(&repo, "some_branch_1");
+    let branch_1_original = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_text = combined_output(&rebase_output);
+
+    assert!(
+        !rebase_output.status.success(),
+        "the rebase should stop on the conflict in some_branch_2, got: {}",
+        rebase_text
+    );
+
+    // Get out of the git-level rebase, then do real work on the branch the run never
+    // reached, leaving one tracked file modified but uncommitted.
+    let git_abort = run_git_command(&path_to_repo, vec!["rebase", "--abort"]);
+    assert!(
+        git_abort.status.success(),
+        "git rebase --abort should succeed, got: {}",
+        combined_output(&git_abort)
+    );
+
+    let checkout_output = run_git_command(&path_to_repo, vec!["checkout", "some_branch_3"]);
+    assert!(
+        checkout_output.status.success(),
+        "checking out some_branch_3 should succeed, got: {}",
+        combined_output(&checkout_output)
+    );
+
+    create_new_file(&path_to_repo, "file_3_extra.txt", "committed work");
+    commit_all(&repo, "user work on some_branch_3");
+    let branch_3_moved = rev_parse(&path_to_repo, "some_branch_3").unwrap();
+
+    // An uncommitted edit to a tracked file — the thing a hard reset would destroy.
+    create_new_file(&path_to_repo, "file_3.txt", "uncommitted edit");
+
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_3_after = rev_parse(&path_to_repo, "some_branch_3").unwrap();
+    let file_3_contents =
+        std::fs::read_to_string(path_to_repo.join("file_3.txt")).unwrap_or_default();
+
+    println!("=== M2 DIAGNOSTICS: abort from a branch it does not own ===");
+    println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!(
+        "some_branch_3: moved={} after abort={} (kept: {})",
+        branch_3_moved,
+        branch_3_after,
+        branch_3_moved == branch_3_after
+    );
+    println!("file_3.txt contents: [{}]", file_3_contents.trim());
+    println!(
+        "abort noted that it left the changes in place: {}",
+        abort_text.contains("Left the uncommitted changes on some_branch_3")
+    );
+    println!("EXPECTED: some_branch_3 and its dirty tree are untouched");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M2 abort leaves branch alone");
+    // assert!(false, "abort output: {}", abort_text);
+    // assert!(false, "file_3.txt: [{}]", file_3_contents);
+
+    assert!(
+        abort_output.status.success(),
+        "rebase --abort should succeed, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("Left the uncommitted changes on some_branch_3"),
+        "the abort should note that it left the working tree alone, got: {}",
+        abort_text
+    );
+    // The uncommitted edit survives: this branch is not the abort's to reset.
+    assert_eq!(
+        file_3_contents.trim(),
+        "uncommitted edit",
+        "the uncommitted edit on some_branch_3 should survive the abort, got: {}",
+        file_3_contents
+    );
+    assert_eq!(
+        branch_3_after, branch_3_moved,
+        "some_branch_3 should keep the commit made during the pause ({}), got {}",
+        branch_3_moved, branch_3_after
+    );
+    // The branches the run did manage are still restored.
+    assert_eq!(
+        branch_1_after, branch_1_original,
+        "some_branch_1 should be restored to {}, got {}",
+        branch_1_original, branch_1_after
+    );
+
     teardown_git_repo(repo_name);
 }
 

@@ -1500,7 +1500,7 @@ impl GitChain {
             state.chain_name.bold()
         );
 
-        let mut restored = 0usize;
+        let mut restored_refs: Vec<(String, String)> = Vec::new();
         let mut already_in_place = 0usize;
         let mut left_as_is: Vec<String> = Vec::new();
         let mut failed: Vec<String> = Vec::new();
@@ -1575,7 +1575,7 @@ impl GitChain {
             match output {
                 Ok(result) if result.status.success() => {
                     println!("  Restored {} to {}", branch_name.bold(), short_oid);
-                    restored += 1;
+                    restored_refs.push((branch_name.clone(), original_oid.clone()));
                 }
                 Ok(result) => {
                     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -1612,12 +1612,76 @@ impl GitChain {
             )));
         }
 
-        // 6. Delete the state before the final checkout. The abort itself is done; a
+        // 6. Bring the working tree and index back in line with the restored refs.
+        //
+        //    Restoring a ref that is currently checked out moves the branch out from under
+        //    HEAD's tree and index, so whatever the interrupted rebase produced is left
+        //    staged: every later git-chain command is then blocked by the dirty check, and
+        //    a stray `git commit` would re-apply the very work this abort discarded. git's
+        //    own `rebase --abort` hard-resets the working tree for the same reason, and
+        //    abort's contract is explicitly discard-and-restore for the branches this
+        //    rebase managed.
+        //
+        //    Only a branch this abort actually restored is reset. One deliberately left
+        //    as-is — user-moved, or carrying an unusable recorded original — is not ours to
+        //    touch, so its uncommitted changes stay put and we say so. Untracked files are
+        //    unaffected either way: `git reset --hard` does not remove them.
+        //
+        //    A detached HEAD needs nothing here: the git-level `git rebase --abort` in step
+        //    2 already reset the working tree before we reached this point.
+        let current_branch = self.get_current_branch_name().unwrap_or_default();
+
+        if let Some((branch_name, original_oid)) = restored_refs
+            .iter()
+            .find(|(branch_name, _)| branch_name == &current_branch)
+        {
+            let short_oid = &original_oid[..7.min(original_oid.len())];
+            let output = Command::new("git")
+                .arg("reset")
+                .arg("--hard")
+                .arg(original_oid)
+                .output();
+
+            match output {
+                Ok(result) if result.status.success() => {
+                    println!(
+                        "  Reset the working tree of {} to {}",
+                        branch_name.bold(),
+                        short_oid
+                    );
+                }
+                Ok(result) => {
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    eprintln!(
+                        "  ⚠️  Restored {} but could not reset its working tree: {}",
+                        branch_name.bold(),
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  ⚠️  Restored {} but could not reset its working tree: {}",
+                        branch_name.bold(),
+                        e
+                    );
+                }
+            }
+        } else if left_as_is.contains(&current_branch)
+            && self.dirty_working_directory().unwrap_or(false)
+        {
+            println!(
+                "  ⚠️  Left the uncommitted changes on {} in place: this abort did not restore \
+                 that branch, so its working tree is not this abort's to reset.",
+                current_branch.bold()
+            );
+        }
+
+        // 7. Delete the state before the final checkout. The abort itself is done; a
         //    checkout failure (the original branch held by another worktree, say) must
         //    not leave the state behind for a retry that would redo the whole sweep.
         delete_state(&self.repo)?;
 
-        // 7. Return to the original branch.
+        // 8. Return to the original branch.
         println!();
         println!("Switching back to branch: {}", state.original_branch.bold());
         if let Err(e) = self.checkout_branch(&state.original_branch) {
@@ -1628,7 +1692,7 @@ impl GitChain {
             );
         }
 
-        // 8. Report what actually happened.
+        // 9. Report what actually happened.
         println!();
         if left_as_is.is_empty() {
             println!(
@@ -1640,8 +1704,8 @@ impl GitChain {
                 "🔄 Aborted chain rebase for chain {}.",
                 state.chain_name.bold()
             );
-            if restored > 0 {
-                println!("   Restored: {}", restored);
+            if !restored_refs.is_empty() {
+                println!("   Restored: {}", restored_refs.len());
             }
             if already_in_place > 0 {
                 println!("   Already at their original state: {}", already_in_place);
