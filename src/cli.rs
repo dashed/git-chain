@@ -186,6 +186,11 @@ where
             Arg::new("cleanup_backups")
                 .long("cleanup-backups")
                 .help("Delete backup branches after successful rebase")
+                .long_help(
+                    "Delete backup branches after a successful rebase.\n\n\
+                     Only the backups this rebase run created are removed. Backups made by \
+                     'git chain backup' or by an earlier run are left alone.",
+                )
                 .conflicts_with_all(["abort_rebase", "status_rebase"])
                 .action(ArgAction::SetTrue),
         );

@@ -2831,9 +2831,11 @@ fn rebase_status_during_conflict() {
     teardown_git_repo(repo_name);
 }
 
+/// `--cleanup-backups` removes only the backups the rebase run itself created, so a
+/// deliberate `git chain backup` survives it (REBASE_AUDIT H1).
 #[test]
-fn rebase_cleanup_backups() {
-    let repo_name = "rebase_cleanup_backups";
+fn rebase_cleanup_backups_keeps_user_backups() {
+    let repo_name = "rebase_cleanup_backups_keeps_user_backups";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
 
@@ -2864,34 +2866,171 @@ fn rebase_cleanup_backups() {
         "backup branch should exist after backup command"
     );
 
+    let backup_before = run_git_command(
+        &path_to_repo,
+        vec!["rev-parse", "backup-chain_name/branch_1"],
+    );
+    let backup_oid_before = String::from_utf8_lossy(&backup_before.stdout)
+        .trim()
+        .to_string();
+
     // Run rebase with --cleanup-backups
     let args: Vec<&str> = vec!["rebase", "--cleanup-backups"];
     let output = run_test_bin_for_rebase(&path_to_repo, args);
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    let backup_after = run_git_command(
+        &path_to_repo,
+        vec!["rev-parse", "backup-chain_name/branch_1"],
+    );
+    let backup_oid_after = String::from_utf8_lossy(&backup_after.stdout)
+        .trim()
+        .to_string();
+
+    // Diagnostic printing
     println!("STDOUT: {}", stdout);
+    println!("backup OID before: {}", backup_oid_before);
+    println!("backup OID after:  {}", backup_oid_after);
+    println!(
+        "output announces cleanup: {}",
+        stdout.contains("Cleaning up backup branches")
+    );
+    println!(
+        "output reports deleting the user backup: {}",
+        stdout.contains("Deleted backup-chain_name/branch_1")
+    );
 
     // Uncomment to stop test execution and debug this test case
     // assert!(false, "stdout: {}", stdout);
+    // assert!(false, "backup before: {} after: {}", backup_oid_before, backup_oid_after);
 
-    // Verify cleanup message
+    // This run created no backups of its own, so cleanup has nothing to delete.
     assert!(
-        stdout.contains("Cleaning up backup branches"),
-        "should show cleanup message, got: {}",
+        !stdout.contains("Cleaning up backup branches"),
+        "cleanup should not run when this rebase created no backups, got: {}",
         stdout
     );
     assert!(
-        stdout.contains("backup-chain_name/branch_1"),
-        "should mention the deleted backup branch, got: {}",
+        !stdout.contains("Deleted backup-chain_name/branch_1"),
+        "the user's backup should not be deleted, got: {}",
         stdout
     );
 
-    // Verify backup branch was deleted
+    // Verify the user's backup branch survived, unmoved.
     // Need to refresh the repo to see the updated state
     let repo = git2::Repository::open(&path_to_repo).unwrap();
     assert!(
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "the user's backup branch should survive --cleanup-backups"
+    );
+    assert_eq!(
+        backup_oid_after, backup_oid_before,
+        "the user's backup should still point at {}, got {}",
+        backup_oid_before, backup_oid_after
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// The other side of the H1 contract: a backup the rebase run creates itself — the safety
+/// net taken before a squash-merge `reset --hard` — IS deleted by `--cleanup-backups`.
+///
+/// Deleting it is the user's explicit choice when passing the flag. Only backups from
+/// outside the run are off limits.
+#[test]
+fn rebase_cleanup_deletes_backups_created_by_the_run() {
+    let repo_name = "rebase_cleanup_deletes_own_backups";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // branch_1 gets commits that will later be squash-merged into master.
+    {
+        create_branch(&repo, "branch_1");
+        checkout_branch(&repo, "branch_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "branch 1 commit");
+    };
+
+    // branch_2 sits on top of branch_1.
+    {
+        create_branch(&repo, "branch_2");
+        checkout_branch(&repo, "branch_2");
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "branch 2 commit");
+    };
+
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "branch_1", "branch_2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    // Squash-merge branch_1 into master. The rebase will detect this and take the
+    // reset path, which creates backup-chain_name/branch_1 first.
+    checkout_branch(&repo, "master");
+    run_git_command(&path_to_repo, vec!["merge", "--squash", "branch_1"]);
+    commit_all(&repo, "squash merge branch_1");
+
+    checkout_branch(&repo, "branch_1");
+
+    // No backup exists before the run; the only one will be the run's own.
+    assert!(
         !branch_exists(&repo, "backup-chain_name/branch_1"),
-        "backup branch should be deleted after cleanup"
+        "no backup should exist before the rebase"
+    );
+
+    let output = run_test_bin_for_rebase(&path_to_repo, ["rebase", "--cleanup-backups"]);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Diagnostic printing
+    println!("STDOUT: {}", stdout);
+    println!("STATUS: {}", output.status.success());
+    println!(
+        "run created its own backup: {}",
+        stdout.contains("Created backup branch: backup-chain_name/branch_1")
+    );
+    println!(
+        "output announces cleanup: {}",
+        stdout.contains("Cleaning up backup branches")
+    );
+    println!(
+        "output reports deleting the run's backup: {}",
+        stdout.contains("Deleted backup-chain_name/branch_1")
+    );
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: cleanup of run-created backup");
+    // assert!(false, "stdout: {}", stdout);
+
+    assert!(
+        output.status.success(),
+        "rebase --cleanup-backups should succeed, got: {}",
+        stdout
+    );
+    // The run took a backup of its own before the destructive reset.
+    assert!(
+        stdout.contains("Created backup branch: backup-chain_name/branch_1"),
+        "the squash-merge path should create a backup for branch_1, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Cleaning up backup branches"),
+        "cleanup should run for the backup this rebase created, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Deleted backup-chain_name/branch_1"),
+        "the run's own backup should be reported as deleted, got: {}",
+        stdout
+    );
+
+    let repo = git2::Repository::open(&path_to_repo).unwrap();
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_1"),
+        "the backup this run created should be deleted by --cleanup-backups"
     );
 
     teardown_git_repo(repo_name);
@@ -4220,8 +4359,8 @@ fn rebase_continue_with_dirty_working_dir() {
 }
 
 #[test]
-fn rebase_continue_cleanup_backups() {
-    let repo_name = "rebase_continue_cleanup_backups";
+fn rebase_continue_cleanup_keeps_user_backups() {
+    let repo_name = "rebase_continue_cleanup_keeps_user_backups";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
 
@@ -4338,14 +4477,21 @@ fn rebase_continue_cleanup_backups() {
     // assert!(false, "DEBUG STOP: continue with cleanup");
     // assert!(false, "stdout: {}", stdout);
 
+    println!(
+        "output announces cleanup: {}",
+        stdout.contains("Cleaning up backup branches")
+    );
+
     assert!(
         stdout.contains("Continuing chain rebase"),
         "should show continue message, got: {}",
         stdout
     );
+    // The backups here came from `git chain backup`, not from this run, so
+    // --cleanup-backups has nothing of its own to delete (REBASE_AUDIT H1).
     assert!(
-        stdout.contains("Cleaning up backup branches"),
-        "should show cleanup message, got: {}",
+        !stdout.contains("Cleaning up backup branches"),
+        "cleanup should not run when this rebase created no backups, got: {}",
         stdout
     );
 
@@ -4356,19 +4502,19 @@ fn rebase_continue_cleanup_backups() {
         "chain rebase state file should be cleaned up after successful continue"
     );
 
-    // Verify backup branches were deleted
+    // Verify the user's backup branches survived
     let repo_after = git2::Repository::open(&path_to_repo).unwrap();
     assert!(
-        !branch_exists(&repo_after, "backup-chain_name/branch_1"),
-        "backup branch for branch_1 should be deleted after --cleanup-backups"
+        branch_exists(&repo_after, "backup-chain_name/branch_1"),
+        "the user's backup for branch_1 should survive --cleanup-backups"
     );
     assert!(
-        !branch_exists(&repo_after, "backup-chain_name/branch_2"),
-        "backup branch for branch_2 should be deleted after --cleanup-backups"
+        branch_exists(&repo_after, "backup-chain_name/branch_2"),
+        "the user's backup for branch_2 should survive --cleanup-backups"
     );
     assert!(
-        !branch_exists(&repo_after, "backup-chain_name/branch_3"),
-        "backup branch for branch_3 should be deleted after --cleanup-backups"
+        branch_exists(&repo_after, "backup-chain_name/branch_3"),
+        "the user's backup for branch_3 should survive --cleanup-backups"
     );
 
     // Verify repo is in clean state
@@ -5426,8 +5572,8 @@ fn rebase_continue_git_rebase_in_progress() {
 //   - Backup branches should be deleted
 //
 #[test]
-fn rebase_skip_cleanup_backups() {
-    let repo_name = "rebase_skip_cleanup_backups";
+fn rebase_skip_cleanup_keeps_user_backups() {
+    let repo_name = "rebase_skip_cleanup_keeps_user_backups";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
 
@@ -5508,21 +5654,27 @@ fn rebase_skip_cleanup_backups() {
         stdout
     );
 
-    // Verify cleanup message
+    // The backups here came from `git chain backup`, not from this run, so
+    // --cleanup-backups has nothing of its own to delete (REBASE_AUDIT H1).
+    println!(
+        "output announces cleanup: {}",
+        stdout.contains("Cleaning up backup branches")
+    );
     assert!(
-        stdout.contains("Cleaning up backup branches"),
-        "should show cleanup message, got: {}",
+        !stdout.contains("Cleaning up backup branches"),
+        "cleanup should not run when this rebase created no backups, got: {}",
         stdout
     );
 
-    // Verify backup branches were deleted
+    // Verify the user's backup branches survived
+    let repo = git2::Repository::open(&path_to_repo).unwrap();
     assert!(
-        !branch_exists(&repo, "backup-chain_name/branch_1"),
-        "backup branch for branch_1 should be deleted after cleanup"
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "the user's backup for branch_1 should survive --cleanup-backups"
     );
     assert!(
-        !branch_exists(&repo, "backup-chain_name/branch_2"),
-        "backup branch for branch_2 should be deleted after cleanup"
+        branch_exists(&repo, "backup-chain_name/branch_2"),
+        "the user's backup for branch_2 should survive --cleanup-backups"
     );
 
     // Verify state file was cleaned up
@@ -6175,8 +6327,8 @@ fn rebase_abort_from_different_branch() {
 //   - Only branch_1 backup deleted, no error for branch_2 (no backup)
 //
 #[test]
-fn rebase_cleanup_partial_backups() {
-    let repo_name = "rebase_cleanup_partial_backups";
+fn rebase_cleanup_keeps_manually_created_backups() {
+    let repo_name = "rebase_cleanup_keeps_manual_backups";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
 
@@ -6236,22 +6388,36 @@ fn rebase_cleanup_partial_backups() {
         stdout
     );
 
-    // Verify cleanup message for branch_1 backup
+    // The backup was created by hand, outside this run, so --cleanup-backups leaves it
+    // alone (REBASE_AUDIT H1).
+    println!(
+        "output announces cleanup: {}",
+        stdout.contains("Cleaning up backup branches")
+    );
+    println!(
+        "output reports deleting the manual backup: {}",
+        stdout.contains("Deleted backup-chain_name/branch_1")
+    );
     assert!(
-        stdout.contains("Cleaning up backup branches"),
-        "should show cleanup message, got: {}",
+        !stdout.contains("Cleaning up backup branches"),
+        "cleanup should not run when this rebase created no backups, got: {}",
         stdout
     );
     assert!(
-        stdout.contains("backup-chain_name/branch_1"),
-        "should mention deleted backup for branch_1, got: {}",
+        !stdout.contains("Deleted backup-chain_name/branch_1"),
+        "the manually created backup should not be deleted, got: {}",
         stdout
     );
 
-    // Verify branch_1 backup was deleted
+    // Verify the manually created backup for branch_1 survived
+    let repo = git2::Repository::open(&path_to_repo).unwrap();
     assert!(
-        !branch_exists(&repo, "backup-chain_name/branch_1"),
-        "backup for branch_1 should be deleted after cleanup"
+        branch_exists(&repo, "backup-chain_name/branch_1"),
+        "the manually created backup for branch_1 should survive --cleanup-backups"
+    );
+    assert!(
+        !branch_exists(&repo, "backup-chain_name/branch_2"),
+        "no backup for branch_2 was ever created, so none should appear"
     );
 
     // Verify no error about branch_2 backup (git rebase writes to stderr, so we only

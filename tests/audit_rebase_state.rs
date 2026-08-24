@@ -13,8 +13,8 @@
 //! assertions have to flip so the test becomes a regression guard for the
 //! fixed behavior.
 //!
-//! Coverage (status: **C1 is FIXED**, its test now guards the fix; H1, H2 and
-//! H3 still characterize their defects):
+//! Coverage (status: **C1 and H1 are FIXED**, their tests now guard the fixes;
+//! H2 and H3 still characterize their defects):
 //!
 //! | Test                                                    | Audit finding | Status  |
 //! |---------------------------------------------------------|---------------|---------|
@@ -22,7 +22,7 @@
 //! | `audit_c1_continue_retries_the_failed_branch`            | C1 · CRITICAL | FIXED   |
 //! | `audit_h2_abort_discards_work_on_untouched_branch`       | H2 · HIGH     | defect  |
 //! | `audit_h3_corrupt_state_wedges_all_recovery_commands`    | H3 · HIGH     | defect  |
-//! | `audit_h1_cleanup_backups_deletes_user_created_backups`  | H1 · HIGH     | defect  |
+//! | `audit_h1_cleanup_backups_keeps_user_created_backups`    | H1 · HIGH     | FIXED   |
 
 #[path = "common/mod.rs"]
 pub mod common;
@@ -1040,24 +1040,21 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
 }
 
 // ---------------------------------------------------------------------------
-// H1 · HIGH — `--cleanup-backups` deletes backups it did not create
+// H1 · HIGH (FIXED) — `--cleanup-backups` deletes ONLY backups it created
 // ---------------------------------------------------------------------------
 
-/// Documents audit finding **H1**: `cleanup_backup_branches`
-/// (`operations.rs:1192-1229`) force-deletes `backup-<chain>/<branch>` for every
-/// branch in the state, with no record of which backups this run created.
+/// Guards the fix for audit finding **H1**: `cleanup_backup_branches` deletes only the
+/// refs listed in the run's `created_backups`, so a backup it did not make survives.
 ///
 /// `git chain backup` writes refs in exactly the same namespace
-/// (`src/branch.rs:217-226`), so a deliberate pre-rebase safety net is destroyed
-/// by a later `rebase --cleanup-backups` — and the successful rebase has just
-/// rewritten the branches those backups pointed at.
+/// (`src/branch.rs:217-226`). Before the fix, a deliberate pre-rebase safety net was
+/// force-deleted by a later `rebase --cleanup-backups` — right after that rebase had
+/// rewritten the very branches those backups pointed at, leaving the old commits
+/// unreferenced.
 ///
-/// AFTER THE FIX (only delete backups this run created):
-///   - each `rev_parse(... "backup-chain_name/some_branch_N")` must still
-///     resolve, and equal the OID recorded before the rebase
-///   - the "Deleted backup-..." lines must disappear from the output
+/// This test fails if cleanup ever reaches outside its own run again.
 #[test]
-fn audit_h1_cleanup_backups_deletes_user_created_backups() {
+fn audit_h1_cleanup_backups_keeps_user_created_backups() {
     let repo_name = "audit_h1_cleanup_backups_deletes_user_backups";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
@@ -1162,6 +1159,19 @@ fn audit_h1_cleanup_backups_deletes_user_created_backups() {
         "backup-chain_name/some_branch_2 after: {:?}",
         backup_2_after
     );
+    println!(
+        "output announces backup cleanup: {}",
+        rebase_text.contains("Cleaning up backup branches")
+    );
+    println!(
+        "output reports deleting the user's backup of some_branch_1: {}",
+        rebase_text.contains("Deleted backup-chain_name/some_branch_1")
+    );
+    println!(
+        "output reports deleting the user's backup of some_branch_2: {}",
+        rebase_text.contains("Deleted backup-chain_name/some_branch_2")
+    );
+    println!("EXPECTED (H1 fixed): both user backups survive, untouched");
     println!("======");
 
     // Uncomment to stop test execution and debug this test case
@@ -1196,35 +1206,45 @@ fn audit_h1_cleanup_backups_deletes_user_created_backups() {
         branch_1_before_rebase
     );
 
-    // DEFECT: backups created by an earlier, separate `git chain backup` are
-    // reported as cleanup targets and force-deleted.
+    // The fix: this run created no backups of its own, so cleanup has nothing to do
+    // and says nothing.
     assert!(
-        rebase_text.contains("Cleaning up backup branches"),
-        "output should announce backup cleanup, got: {}",
+        !rebase_text.contains("Cleaning up backup branches"),
+        "cleanup should not run when this rebase created no backups, got: {}",
         rebase_text
     );
     assert!(
-        rebase_text.contains("Deleted backup-chain_name/some_branch_1"),
-        "output should report deleting the user's backup of some_branch_1, got: {}",
+        !rebase_text.contains("Deleted backup-chain_name/some_branch_1"),
+        "the user's backup of some_branch_1 should not be deleted, got: {}",
         rebase_text
     );
     assert!(
-        rebase_text.contains("Deleted backup-chain_name/some_branch_2"),
-        "output should report deleting the user's backup of some_branch_2, got: {}",
+        !rebase_text.contains("Deleted backup-chain_name/some_branch_2"),
+        "the user's backup of some_branch_2 should not be deleted, got: {}",
         rebase_text
     );
 
-    assert!(
-        backup_1_after.is_none(),
-        "DEFECT H1 no longer reproduces: backup-chain_name/some_branch_1 survived at \
-         {:?}. If the fix landed, invert this assertion (see AFTER THE FIX above).",
-        backup_1_after
+    // Both backups still resolve, and still point exactly where they did before.
+    assert_eq!(
+        backup_1_after, backup_1_oid,
+        "backup-chain_name/some_branch_1 should be untouched by the rebase, but went \
+         from {:?} to {:?}",
+        backup_1_oid, backup_1_after
     );
-    assert!(
-        backup_2_after.is_none(),
-        "DEFECT H1 no longer reproduces: backup-chain_name/some_branch_2 survived at \
-         {:?}. If the fix landed, invert this assertion.",
-        backup_2_after
+    assert_eq!(
+        backup_2_after, backup_2_oid,
+        "backup-chain_name/some_branch_2 should be untouched by the rebase, but went \
+         from {:?} to {:?}",
+        backup_2_oid, backup_2_after
+    );
+    // Restated as the property that matters: the pre-rebase commits are still reachable.
+    assert_eq!(
+        backup_1_after.as_deref(),
+        Some(branch_1_before_rebase.as_str()),
+        "backup-chain_name/some_branch_1 should still point at the pre-rebase tip of \
+         some_branch_1 ({}), got {:?}",
+        branch_1_before_rebase,
+        backup_1_after
     );
 
     teardown_git_repo(repo_name);

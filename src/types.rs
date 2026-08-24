@@ -130,6 +130,14 @@ pub struct ChainRebaseState {
     pub current_index: usize,
     pub completed_count: usize,
     pub total_count: usize,
+    /// Backup refs (`backup-<chain>/<branch>`) created by THIS rebase run.
+    ///
+    /// `--cleanup-backups` deletes only these, so refs from `git chain backup` or from
+    /// an earlier run survive. `#[serde(default)]` keeps state files written before this
+    /// field existed parseable — a state file that fails to deserialize wedges every
+    /// recovery command.
+    #[serde(default)]
+    pub created_backups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

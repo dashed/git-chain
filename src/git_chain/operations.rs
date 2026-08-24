@@ -123,6 +123,7 @@ impl GitChain {
                 current_index: 0,
                 completed_count: 0,
                 total_count: chain.branches.len(),
+                created_backups: Vec::new(),
             };
 
             write_state(&self.repo, &state)?;
@@ -219,6 +220,9 @@ impl GitChain {
                         branch.backup(self)?;
                         let backup_name = format!("backup-{}/{}", chain_name, branch.branch_name);
                         println!("📦 Created backup branch: {}", backup_name.bold());
+                        if !step_rebase {
+                            self.record_created_backup(&backup_name)?;
+                        }
 
                         let command = format!("git reset --hard {}", prev_branch_name);
 
@@ -347,7 +351,7 @@ impl GitChain {
             let state = read_state(&self.repo)?;
             self.print_rebase_summary(&state, num_of_rebase_operations);
             if cleanup_backups {
-                self.cleanup_backup_branches(chain_name, &state.branches);
+                self.cleanup_backup_branches(&state.created_backups);
             }
             let _ = delete_state(&self.repo);
         }
@@ -405,6 +409,28 @@ impl GitChain {
              their original state.",
             self.executable_name
         )
+    }
+
+    /// Record a backup ref created by this run in the persisted state file.
+    ///
+    /// `--cleanup-backups` deletes exactly this list, so a backup made by
+    /// `git chain backup` or by an earlier run is never touched.
+    fn record_created_backup(&self, backup_name: &str) -> Result<(), Error> {
+        let mut state = read_state(&self.repo)?;
+        self.record_created_backup_in(&mut state, backup_name)
+    }
+
+    /// Same, for callers that already hold the state in memory.
+    fn record_created_backup_in(
+        &self,
+        state: &mut ChainRebaseState,
+        backup_name: &str,
+    ) -> Result<(), Error> {
+        if !state.created_backups.iter().any(|b| b == backup_name) {
+            state.created_backups.push(backup_name.to_string());
+            write_state(&self.repo, state)?;
+        }
+        Ok(())
     }
 
     /// Helper to update a branch's status in the persisted state file.
@@ -671,6 +697,7 @@ impl GitChain {
                         self.create_backup_branch(&state.chain_name, &branch_name)?;
                         let backup_name = format!("backup-{}/{}", state.chain_name, branch_name);
                         println!("📦 Created backup branch: {}", backup_name.bold());
+                        self.record_created_backup_in(&mut state, &backup_name)?;
 
                         let command = format!("git reset --hard {}", parent_name);
                         let output = Command::new("git")
@@ -768,9 +795,8 @@ impl GitChain {
 
         // Print summary and clean up
         self.print_rebase_summary(&state, num_of_rebase_operations);
-        let chain_name = state.chain_name.clone();
         if cleanup_backups {
-            self.cleanup_backup_branches(&chain_name, &state.branches);
+            self.cleanup_backup_branches(&state.created_backups);
         }
         let _ = delete_state(&self.repo);
 
@@ -990,6 +1016,7 @@ impl GitChain {
                         self.create_backup_branch(&state.chain_name, &branch_name)?;
                         let backup_name = format!("backup-{}/{}", state.chain_name, branch_name);
                         println!("📦 Created backup branch: {}", backup_name.bold());
+                        self.record_created_backup_in(&mut state, &backup_name)?;
 
                         let command = format!("git reset --hard {}", parent_name);
                         let output = Command::new("git")
@@ -1087,9 +1114,8 @@ impl GitChain {
 
         // Print summary and clean up
         self.print_rebase_summary(&state, num_of_rebase_operations);
-        let chain_name = state.chain_name.clone();
         if cleanup_backups {
-            self.cleanup_backup_branches(&chain_name, &state.branches);
+            self.cleanup_backup_branches(&state.created_backups);
         }
         let _ = delete_state(&self.repo);
 
@@ -1257,18 +1283,21 @@ impl GitChain {
         Ok(())
     }
 
-    /// Delete backup branches for a chain after successful rebase.
-    fn cleanup_backup_branches(&self, chain_name: &str, branches: &[BranchState]) {
+    /// Delete the backup branches this rebase run created, after it completes.
+    ///
+    /// Only refs recorded in `created_backups` are removed. Backups made by
+    /// `git chain backup` or by an earlier run share the same namespace but are not
+    /// this command's to delete — they are often the only remaining pre-rebase pointers.
+    fn cleanup_backup_branches(&self, created_backups: &[String]) {
         let mut cleaned = 0;
 
-        for branch in branches {
-            let backup_name = format!("backup-{}/{}", chain_name, branch.name);
+        for backup_name in created_backups {
             // Check if backup branch exists
-            if self.git_local_branch_exists(&backup_name).unwrap_or(false) {
+            if self.git_local_branch_exists(backup_name).unwrap_or(false) {
                 let output = Command::new("git")
                     .arg("branch")
                     .arg("-D")
-                    .arg(&backup_name)
+                    .arg(backup_name)
                     .output();
 
                 match output {
