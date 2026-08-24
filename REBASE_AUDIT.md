@@ -317,13 +317,28 @@ characterization tests:**
    C1 treatment (Failed + state kept + advice).
 10. M1 — fixed in `4e1febb`: `--step` refuses while a chain rebase is paused.
 
-**P2 — hygiene & honesty:**
-11. F3: `--keep-empty` → `--empty=drop`; F4: explicit `--no-rebase-merges`.
-12. M3: write `InProgress`; fix `--skip` ordering. M5: chain revalidation on
-    continue/skip. M6: truthful summaries (also release-audit MEDIUM 2).
-    M7: `--status` consults `repo.state()`.
-13. M8: state under `commondir()`; guard reads rebase state of worktrees.
-14. F5/F6/F7, L1–L8, cosmetics.
+**P2 — hygiene & honesty: ✅ ALL FIXED (2026-08-24), except F7 (accepted):**
+11. F3/F4 — fixed in `2fcb5b3`: `--empty=drop --no-rebase-merges` explicit
+    (start-empty commits verified kept; effective git floor 2.26 unchanged;
+    `rebase.rebaseMerges` isolated).
+12. M3/M5/M6/M7 — fixed in `4100567`: real `InProgress` (crash-visible;
+    `--skip` validates before destroying; the old `--continue` InProgress
+    arm marked crashed branches Completed — removed in favor of retry);
+    chain revalidation on continue/skip with `--abort` advice; truthful
+    summaries (`Up-to-date:` vs `Rebased:`, skip-qualified closing lines,
+    `--skip` restore failures error and keep state); `--status` warns about
+    live/orphaned git-level rebases.
+13. M8 — fixed in `b2ed369` (+ L6): state under `commondir()` with legacy
+    fallback; worktree guard reads `rebase-merge/head-name` /
+    `rebase-apply/head-name` (mirrors git's `is_worktree_being_rebased`);
+    pid-suffixed temp file.
+14. F5/F6, L1, L5, L7, L8, cosmetics — fixed in `1781cec` (fail-safe squash
+    detection; `rebase --no-fork-point` persisted across pauses; merge's
+    `-f` wired; in-progress guard fires before chain resolution; dead
+    `current_index` removed; cleanup failures warn with `--quit` advice;
+    `--step`/`--cleanup-backups` conflict; CHANGELOG links, detached-HEAD
+    wording, README docs). F7 (dangling objects from squash detection until
+    gc) — accepted as informational.
 
 Suggested regression tests to add alongside: hook-refusal mid-chain (C1),
 `rebase.updateRefs=true` chain rebase (F2), cherry-picked-then-refined
