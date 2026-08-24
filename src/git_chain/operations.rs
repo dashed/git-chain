@@ -23,58 +23,9 @@ impl GitChain {
         ignore_root: bool,
         squashed_merge_handling: SquashedRebaseHandling,
         cleanup_backups: bool,
+        no_fork_point: bool,
     ) -> Result<(), Error> {
-        // Check for existing chain rebase state. Step mode keeps no state of its own, so
-        // without this it would happily rebase branches the paused run is still tracking,
-        // invalidating that run's recorded originals and pre-computed merge bases.
-        if state_exists(&self.repo) {
-            // An unreadable state file cannot be resumed, skipped, aborted or reported on —
-            // every one of those parses it first. Say so, and point at the one command that
-            // does not: --quit.
-            let chain_info = match read_state(&self.repo) {
-                Ok(state) => format!(" for chain '{}'", state.chain_name),
-                Err(e) => {
-                    return Err(Error::from_str(&format!(
-                        "🛑 A chain rebase state file exists but cannot be read:\n\
-                         {}\n\n\
-                         '{} rebase --continue', '--skip', '--abort' and '--status' all read \
-                         this file, so none of them can run either.\n\
-                         Run '{} rebase --quit' to discard it without touching any branch.",
-                        e.message(),
-                        self.executable_name,
-                        self.executable_name
-                    )));
-                }
-            };
-
-            if step_rebase {
-                return Err(Error::from_str(&format!(
-                    "🛑 A chain rebase is already in progress{}.\n\
-                     '{} rebase --step' cannot run while it is paused.\n\
-                     Use '{} rebase --continue' to resume it,\n\
-                         '{} rebase --abort' to cancel and restore all branches,\n\
-                     or  '{} rebase --quit' to discard the state and leave every branch as-is.",
-                    chain_info,
-                    self.executable_name,
-                    self.executable_name,
-                    self.executable_name,
-                    self.executable_name
-                )));
-            }
-
-            return Err(Error::from_str(&format!(
-                "🛑 A chain rebase is already in progress{}.\n\
-                 Use '{} rebase --continue' to resume after resolving conflicts,\n\
-                     '{} rebase --skip' to skip the conflicted branch,\n\
-                     '{} rebase --abort' to cancel and restore all branches,\n\
-                 or  '{} rebase --quit' to discard the state and leave every branch as-is.",
-                chain_info,
-                self.executable_name,
-                self.executable_name,
-                self.executable_name,
-                self.executable_name
-            )));
-        }
+        self.ensure_no_chain_rebase_in_progress(step_rebase)?;
 
         match self.preliminary_checks(chain_name) {
             Ok(_) => {}
@@ -98,16 +49,19 @@ impl GitChain {
         let mut common_ancestors = vec![];
 
         for (index, branch) in chain.branches.iter().enumerate() {
-            if index == 0 {
-                let common_point = self.smart_merge_base(&root_branch, &branch.branch_name)?;
-                common_ancestors.push(common_point);
-                continue;
-            }
+            let parent = if index == 0 {
+                root_branch.as_str()
+            } else {
+                chain.branches[index - 1].branch_name.as_str()
+            };
 
-            let prev_branch = &chain.branches[index - 1];
-
-            let common_point =
-                self.smart_merge_base(&prev_branch.branch_name, &branch.branch_name)?;
+            // `--no-fork-point` skips git's reflog-based calculation entirely and takes the
+            // plain merge-base, for repositories where that reflog is missing or misleading.
+            let common_point = if no_fork_point {
+                self.merge_base(parent, &branch.branch_name)?
+            } else {
+                self.smart_merge_base(parent, &branch.branch_name)?
+            };
             common_ancestors.push(common_point);
         }
 
@@ -154,11 +108,11 @@ impl GitChain {
                     step_rebase: false,
                     ignore_root,
                     squashed_merge_handling: squash_str.to_string(),
+                    no_fork_point,
                 },
                 original_refs,
                 merge_bases: common_ancestors.clone(),
                 branches: branch_states,
-                current_index: 0,
                 completed_count: 0,
                 total_count: chain.branches.len(),
                 created_backups: Vec::new(),
@@ -311,8 +265,12 @@ impl GitChain {
                 self.update_branch_state(index, BranchRebaseStatus::InProgress)?;
             }
 
-            let (command, mut rebase_command) =
-                self.chain_rebase_command(prev_branch_name, common_point, &branch.branch_name);
+            let (command, mut rebase_command) = self.chain_rebase_command(
+                prev_branch_name,
+                common_point,
+                &branch.branch_name,
+                !no_fork_point,
+            );
 
             let output = rebase_command
                 .output()
@@ -403,12 +361,23 @@ impl GitChain {
                     root_branch.bold()
                 );
             }
-            let state = read_state(&self.repo)?;
-            self.print_rebase_summary(&state);
-            if cleanup_backups {
-                self.cleanup_backup_branches(&state.created_backups);
+            // The rebase itself has succeeded. A summary we cannot render is a cosmetic
+            // loss, not a reason to report failure (REBASE_AUDIT L8).
+            match read_state(&self.repo) {
+                Ok(state) => {
+                    self.print_rebase_summary(&state);
+                    if cleanup_backups {
+                        self.cleanup_backup_branches(&state.created_backups);
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "  ⚠️  Could not read the chain rebase state for the summary: {}",
+                        e
+                    );
+                }
             }
-            let _ = delete_state(&self.repo);
+            self.clear_state_after_success();
         }
 
         let current_branch = self.get_current_branch_name()?;
@@ -482,6 +451,9 @@ impl GitChain {
     /// conflicting whenever the parent has since touched the same lines. That is
     /// REBASE_AUDIT.md finding F1.
     ///
+    /// `allow_fork_point` is false under `--no-fork-point`, which forces the frozen form
+    /// outright: the user has told us the reflog is not to be trusted.
+    ///
     /// The dedup form is used only when git's own fork-point calculation, run now, agrees
     /// exactly with the SHA pre-computed before any branch in the chain moved. That
     /// pre-computation is reflog-independent and remains the source of truth; `--fork-point`
@@ -523,6 +495,7 @@ impl GitChain {
         parent: &str,
         fork_point: &str,
         branch: &str,
+        allow_fork_point: bool,
     ) -> (String, Command) {
         let mut command = Command::new("git");
         command
@@ -532,7 +505,7 @@ impl GitChain {
             .arg("--empty=drop")
             .arg("--no-rebase-merges");
 
-        if self.fork_point_matches(parent, fork_point, branch) {
+        if allow_fork_point && self.fork_point_matches(parent, fork_point, branch) {
             command
                 .arg("--fork-point")
                 .arg("--onto")
@@ -701,6 +674,84 @@ impl GitChain {
         None
     }
 
+    /// Remove the state file after a successful run, warning rather than failing.
+    ///
+    /// The rebase is already done, so an undeletable state file must not turn success into an
+    /// error — but it does block every later chain rebase, so silently ignoring it (as this
+    /// used to) leaves the user stuck with no idea why (REBASE_AUDIT L5).
+    fn clear_state_after_success(&self) {
+        if let Err(e) = delete_state(&self.repo) {
+            eprintln!("  ⚠️  {}", e);
+            eprintln!(
+                "     The rebase finished, but the leftover state will block the next one. \
+                 Run '{} rebase --quit' to clear it.",
+                self.executable_name
+            );
+        }
+    }
+
+    /// Refuse to start a new chain rebase while one is already recorded.
+    ///
+    /// Called from the command layer *before* the current branch's chain is resolved, so a
+    /// paused rebase is reported even when HEAD sits on a branch outside any chain — the
+    /// chain lookup used to run first and answer "not part of any chain" instead.
+    ///
+    /// Step mode keeps no state of its own, so without this it would happily rebase branches
+    /// the paused run is still tracking, invalidating that run's recorded originals and
+    /// pre-computed merge bases (REBASE_AUDIT M1).
+    pub fn ensure_no_chain_rebase_in_progress(&self, step_rebase: bool) -> Result<(), Error> {
+        if !state_exists(&self.repo) {
+            return Ok(());
+        }
+
+        // An unreadable state file cannot be resumed, skipped, aborted or reported on —
+        // every one of those parses it first. Say so, and point at the one command that
+        // does not: --quit.
+        let chain_info = match read_state(&self.repo) {
+            Ok(state) => format!(" for chain '{}'", state.chain_name),
+            Err(e) => {
+                return Err(Error::from_str(&format!(
+                    "🛑 A chain rebase state file exists but cannot be read:\n\
+                     {}\n\n\
+                     '{} rebase --continue', '--skip', '--abort' and '--status' all read \
+                     this file, so none of them can run either.\n\
+                     Run '{} rebase --quit' to discard it without touching any branch.",
+                    e.message(),
+                    self.executable_name,
+                    self.executable_name
+                )));
+            }
+        };
+
+        if step_rebase {
+            return Err(Error::from_str(&format!(
+                "🛑 A chain rebase is already in progress{}.\n\
+                 '{} rebase --step' cannot run while it is paused.\n\
+                 Use '{} rebase --continue' to resume it,\n\
+                     '{} rebase --abort' to cancel and restore all branches,\n\
+                 or  '{} rebase --quit' to discard the state and leave every branch as-is.",
+                chain_info,
+                self.executable_name,
+                self.executable_name,
+                self.executable_name,
+                self.executable_name
+            )));
+        }
+
+        Err(Error::from_str(&format!(
+            "🛑 A chain rebase is already in progress{}.\n\
+             Use '{} rebase --continue' to resume after resolving conflicts,\n\
+                 '{} rebase --skip' to skip the conflicted branch,\n\
+                 '{} rebase --abort' to cancel and restore all branches,\n\
+             or  '{} rebase --quit' to discard the state and leave every branch as-is.",
+            chain_info,
+            self.executable_name,
+            self.executable_name,
+            self.executable_name,
+            self.executable_name
+        )))
+    }
+
     /// Advice appended to a chain-rebase failure whose repository state stayed clean
     /// (a refusing hook, a branch checked out in another worktree, ENOSPC, ...).
     ///
@@ -746,7 +797,6 @@ impl GitChain {
         let mut state = read_state(&self.repo)?;
         if branch_index < state.branches.len() {
             state.branches[branch_index].status = status;
-            state.current_index = branch_index;
             state.completed_count = state
                 .branches
                 .iter()
@@ -791,11 +841,10 @@ impl GitChain {
 
         // 3. Check for dirty working directory
         if self.dirty_working_directory()? {
-            let current_branch = self.get_current_branch_name()?;
             return Err(Error::from_str(&format!(
-                "You have uncommitted changes on branch {}.\n\
+                "You have uncommitted changes {}.\n\
                  Please commit or stash them before continuing the chain rebase.",
-                current_branch.bold()
+                self.describe_current_position()
             )));
         }
 
@@ -1028,6 +1077,7 @@ impl GitChain {
                 parent_name.as_str(),
                 common_point.as_str(),
                 branch_name.as_str(),
+                !state.options.no_fork_point,
             );
 
             let output = rebase_command
@@ -1089,7 +1139,7 @@ impl GitChain {
         if cleanup_backups {
             self.cleanup_backup_branches(&state.created_backups);
         }
-        let _ = delete_state(&self.repo);
+        self.clear_state_after_success();
 
         // Return to original branch
         let current_branch = self.get_current_branch_name()?;
@@ -1119,7 +1169,6 @@ impl GitChain {
     ) -> Result<(), Error> {
         if branch_index < state.branches.len() {
             state.branches[branch_index].status = status;
-            state.current_index = branch_index;
             state.completed_count = state
                 .branches
                 .iter()
@@ -1372,6 +1421,7 @@ impl GitChain {
                 parent_name.as_str(),
                 common_point.as_str(),
                 branch_name.as_str(),
+                !state.options.no_fork_point,
             );
 
             let output = rebase_command
@@ -1433,7 +1483,7 @@ impl GitChain {
         if cleanup_backups {
             self.cleanup_backup_branches(&state.created_backups);
         }
-        let _ = delete_state(&self.repo);
+        self.clear_state_after_success();
 
         // Return to original branch
         let current_branch = self.get_current_branch_name()?;
@@ -2013,7 +2063,7 @@ impl GitChain {
             if self.dirty_working_directory()? {
                 let current_branch = self.get_current_branch_name()?;
                 return Err(Error::from_str(&format!(
-                    "🛑 Unable to back up branches for the chain: {}\nYou have uncommitted changes on branch {}.\nPlease commit or stash them.",
+                    "🛑 Unable to back up branches for the chain: {}\nYou have uncommitted changes {}.\nPlease commit or stash them.",
                     chain.name,
                     current_branch.bold()
                 )));
@@ -2174,10 +2224,9 @@ impl GitChain {
         }
 
         if self.dirty_working_directory()? {
-            let current_branch = self.get_current_branch_name()?;
             return Err(Error::from_str(&format!(
-                "You have uncommitted changes on branch {}.",
-                current_branch.bold()
+                "You have uncommitted changes {}.",
+                self.describe_current_position()
             )));
         }
 

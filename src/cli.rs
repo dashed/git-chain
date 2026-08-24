@@ -187,6 +187,26 @@ where
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("no_fork_point")
+                .long("no-fork-point")
+                .help("Compute merge bases without consulting reflogs")
+                .long_help(
+                    "Compute merge bases without consulting reflogs.\n\n\
+                     By default git-chain uses git's fork-point calculation, which reads the \
+                     parent branch's reflog, to decide where each branch's commits begin. Use \
+                     this when that reflog is misleading — after a fresh clone, or once it has \
+                     been expired or rewritten — to fall back to a plain merge-base.",
+                )
+                .conflicts_with_all([
+                    "continue_rebase",
+                    "abort_rebase",
+                    "skip_rebase",
+                    "status_rebase",
+                    "quit_rebase",
+                ])
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("quit_rebase")
                 .long("quit")
                 .help("Discard the chain rebase state without touching any branch")
@@ -216,7 +236,7 @@ where
                      Only the backups this rebase run created are removed. Backups made by \
                      'git chain backup' or by an earlier run are left alone.",
                 )
-                .conflicts_with_all(["abort_rebase", "status_rebase", "quit_rebase"])
+                .conflicts_with_all(["abort_rebase", "status_rebase", "quit_rebase", "step"])
                 .action(ArgAction::SetTrue),
         );
 
@@ -340,6 +360,7 @@ where
                 .short('f')
                 .long("fork-point")
                 .help("Use git merge-base --fork-point for finding common ancestors [default]")
+                .conflicts_with("no_fork_point")
                 .action(ArgAction::SetTrue),
         )
         .arg(

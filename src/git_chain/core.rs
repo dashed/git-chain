@@ -71,6 +71,18 @@ impl GitChain {
         }
     }
 
+    /// How to name the current position in a message, e.g. "on branch main".
+    ///
+    /// `get_current_branch_name` reports a detached HEAD as the literal branch name "HEAD",
+    /// which reads as nonsense in a sentence ("uncommitted changes on branch HEAD").
+    pub fn describe_current_position(&self) -> String {
+        match self.get_current_branch_name() {
+            Ok(name) if name == "HEAD" => String::from("in detached HEAD state"),
+            Ok(name) => format!("on branch {}", name.bold()),
+            Err(_) => String::from("in this repository"),
+        }
+    }
+
     pub fn get_local_git_config(&self) -> Result<Config, Error> {
         self.repo.config()?.open_level(ConfigLevel::Local)
     }

@@ -284,6 +284,13 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 git_chain.rebase_quit()?;
             } else {
                 // Rebase all branches for the current chain.
+                let step_rebase = sub_matches.get_flag("step");
+
+                // Before resolving the chain: a paused rebase must be reported even when HEAD
+                // is on a branch outside any chain, which the lookup below would answer with
+                // "not part of any chain" instead.
+                git_chain.ensure_no_chain_rebase_in_progress(step_rebase)?;
+
                 let branch_name = git_chain.get_current_branch_name()?;
 
                 let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
@@ -295,8 +302,8 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 };
 
                 if Chain::chain_exists(&git_chain, &branch.chain_name)? {
-                    let step_rebase = sub_matches.get_flag("step");
                     let ignore_root = sub_matches.get_flag("ignore_root");
+                    let no_fork_point = sub_matches.get_flag("no_fork_point");
                     let squashed_merge_handling = match sub_matches
                         .get_one::<String>("squashed_merge")
                         .map(|s| s.as_str())
@@ -311,6 +318,7 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                         ignore_root,
                         squashed_merge_handling,
                         cleanup_backups,
+                        no_fork_point,
                     )?;
                 } else {
                     eprintln!("Unable to rebase chain.");
@@ -768,7 +776,10 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let options = MergeOptions {
                 ignore_root: sub_matches.get_flag("ignore_root"),
                 merge_flags,
-                use_fork_point: !sub_matches.get_flag("no_fork_point"),
+                // `--fork-point` is the explicit spelling of the default; clap rejects it
+                // alongside `--no-fork-point`, so either flag alone decides the answer.
+                use_fork_point: sub_matches.get_flag("fork_point")
+                    || !sub_matches.get_flag("no_fork_point"),
                 squashed_merge_handling,
                 verbose: sub_matches.get_flag("verbose"),
                 return_to_original: !sub_matches.get_flag("stay"),

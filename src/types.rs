@@ -127,7 +127,6 @@ pub struct ChainRebaseState {
     pub original_refs: HashMap<String, String>,
     pub merge_bases: Vec<String>,
     pub branches: Vec<BranchState>,
-    pub current_index: usize,
     pub completed_count: usize,
     pub total_count: usize,
     /// Backup refs (`backup-<chain>/<branch>`) created by THIS rebase run.
@@ -145,6 +144,12 @@ pub struct RebaseStateOptions {
     pub step_rebase: bool,
     pub ignore_root: bool,
     pub squashed_merge_handling: String,
+    /// Whether the run was started with `--no-fork-point`, so a resume keeps ignoring reflogs.
+    ///
+    /// Additive: state files written before this field existed default to `false`, which is
+    /// the previous behavior.
+    #[serde(default)]
+    pub no_fork_point: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

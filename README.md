@@ -124,6 +124,18 @@ Git Chain's rebase command offers customization through its flags:
   ```
   Displays the status of each branch in an ongoing chain rebase, including which branches have been completed, skipped, or are still pending. Reports "No chain rebase in progress" when no state file exists.
 
+- **`--quit`**: Discard the chain rebase state without touching any branch
+  ```
+  git chain rebase --quit
+  ```
+  Removes the state file and leaves every branch exactly where it is. This is the escape hatch for a state file the other recovery commands cannot read — they all parse it first, so a corrupt or unrecognised one stops `--continue`, `--skip`, `--abort` and `--status` alike. Unlike `--abort`, nothing is restored; use `--abort` when you want the chain rewound.
+
+- **`--no-fork-point`**: Compute merge bases without consulting reflogs
+  ```
+  git chain rebase --no-fork-point
+  ```
+  By default git-chain uses git's fork-point calculation, which reads the parent branch's reflog, to decide where each branch's own commits begin. Use this flag when that reflog is missing or misleading — after a fresh clone, or once it has been expired or rewritten — to fall back to a plain merge-base.
+
 - **`--cleanup-backups`**: Delete backup branches after successful rebase
   ```
   git chain rebase --cleanup-backups
@@ -271,6 +283,14 @@ Continuing chain rebase...
 Rebasing branch feature/profiles onto feature/auth...
 # Continues with remaining branches
 ```
+
+### Pruning Merged Branches
+
+After a rebase, git-chain checks whether any branch of the chain has become an ancestor of the root branch — the usual sign that it has landed upstream. When one has, the summary names it and suggests `git chain prune`, which removes those branches from the chain (leaving the branches themselves alone).
+
+### Branches Held by Another Worktree
+
+A branch checked out in another linked worktree cannot be rebased or switched to, so git-chain refuses rather than leaving the working tree half-changed. The error names the branch and the worktree holding it, and suggests `git worktree remove <path>` or `git worktree prune`. `git chain rebase` checks the whole chain up front, before any branch is touched and before any state is written, so nothing needs undoing after such a refusal. A worktree part-way through its own `git rebase` counts as holding the branch too, even though its `HEAD` is detached at that moment.
 
 ### Progress Reporting and Summary
 

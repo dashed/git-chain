@@ -82,7 +82,11 @@ impl GitChain {
 
         let lines: Vec<String> = cherry_output.lines().map(|x| x.to_string()).collect();
         if lines.is_empty() {
-            return Ok(true);
+            // `git cherry` told us nothing. Under the default handling a `true` here sends the
+            // branch down the `git reset --hard` path, so "learned nothing" would be treated as
+            // "definitely squash-merged" — the destructive reading of an absent answer. False is
+            // the safe default: the branch is rebased normally instead (REBASE_AUDIT F5).
+            return Ok(false);
         }
 
         if lines.len() == 1 {
@@ -92,15 +96,22 @@ impl GitChain {
             return Ok(is_squashed_merged);
         }
 
+        // Every line must be a `-` (already-upstream) line, and one of them must be the
+        // dangling commit itself. Without that second check the multi-line path could report a
+        // squash-merge from output that never mentions the commit under test — the single-line
+        // path above has always verified it (REBASE_AUDIT F5).
+        let mut saw_dangling_commit = false;
         for line in lines {
-            if line.trim().starts_with('-') {
-                continue;
-            } else {
+            let line = line.trim();
+            if !line.starts_with('-') {
                 return Ok(false);
+            }
+            if line.starts_with(&format!("- {}", dangling_commit_id)) {
+                saw_dangling_commit = true;
             }
         }
 
-        Ok(true)
+        Ok(saw_dangling_commit)
     }
     pub fn smart_merge_base(
         &self,
@@ -557,7 +568,7 @@ impl GitChain {
         if self.dirty_working_directory()? {
             let current_branch = self.get_current_branch_name()?;
             return Err(Error::from_str(&format!(
-            "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes on branch {}.\nPlease commit or stash them.",
+            "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes {}.\nPlease commit or stash them.",
             chain_name.bold(),
             current_branch.bold()
         )));

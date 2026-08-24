@@ -1151,3 +1151,143 @@ fn audit_f4_rebase_merges_config_cannot_change_chain_semantics() {
 
     teardown_git_repo(repo_name);
 }
+
+/// F6: `--no-fork-point` opts out of git's reflog-based fork-point calculation entirely.
+///
+/// The guard in `chain_rebase_command` already falls back to the frozen SHA when git's
+/// calculation disagrees, but there was no way to say "don't consult the reflog at all" —
+/// which is what you want after a fresh clone, or once the reflog has been expired or
+/// rewritten. The flag forces the frozen form for every branch, whatever the reflog says.
+#[test]
+fn audit_f6_no_fork_point_forces_the_frozen_form() {
+    let repo_name = "audit_f6_no_fork_point";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    create_new_file(&path_to_repo, "hello.txt", "hello");
+    first_commit_all(&repo, "base");
+
+    create_branch(&repo, "some_branch_1");
+    checkout_branch(&repo, "some_branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+    commit_all(&repo, "commit on some_branch_1");
+
+    create_branch(&repo, "some_branch_2");
+    checkout_branch(&repo, "some_branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+    commit_all(&repo, "commit on some_branch_2");
+
+    run_test_bin_expect_ok(
+        &path_to_repo,
+        vec![
+            "setup",
+            "audit_chain",
+            "master",
+            "some_branch_1",
+            "some_branch_2",
+        ],
+    );
+
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "m.txt", "m");
+    commit_all(&repo, "master advances");
+    checkout_branch(&repo, "some_branch_1");
+
+    // A healthy repository: without the flag this chain takes the dedup form, so the flag is
+    // doing the work rather than the scenario.
+    let default_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let default_stdout = String::from_utf8_lossy(&default_output.stdout).to_string();
+
+    // Undo the first rebase so both runs start from the same place.
+    let reset_output = run_test_bin(&path_to_repo, vec!["rebase", "--quit"]);
+    println!(
+        "QUIT AFTER FIRST RUN: {}",
+        String::from_utf8_lossy(&reset_output.stdout)
+    );
+
+    let flagged_output = run_test_bin(&path_to_repo, vec!["rebase", "--no-fork-point"]);
+    let flagged_stdout = String::from_utf8_lossy(&flagged_output.stdout).to_string();
+    let flagged_stderr = String::from_utf8_lossy(&flagged_output.stderr).to_string();
+
+    let branch_1_command = echoed_rebase_command(&flagged_stdout, "some_branch_1");
+    let branch_2_command = echoed_rebase_command(&flagged_stdout, "some_branch_2");
+
+    let porcelain = git_stdout(&path_to_repo, vec!["status", "--porcelain"]);
+    let branch_2_log = git_stdout(
+        &path_to_repo,
+        vec!["log", "--oneline", "--format=%s", "some_branch_2"],
+    );
+
+    println!("=== F6 DIAGNOSTICS ===");
+    println!("DEFAULT RUN STDOUT: {}", default_stdout);
+    println!(
+        "default run used the dedup form: {}",
+        default_stdout.contains("--fork-point")
+    );
+    println!("FLAGGED RUN STDOUT: {}", flagged_stdout);
+    println!("FLAGGED RUN STDERR: {}", flagged_stderr);
+    println!("some_branch_1 command: {}", branch_1_command);
+    println!("some_branch_2 command: {}", branch_2_command);
+    println!("git status --porcelain: {}", porcelain);
+    println!("some_branch_2 log:\n{}", branch_2_log);
+    println!("EXPECTED: --no-fork-point uses the frozen form for every branch");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: F6 no-fork-point");
+    // assert!(false, "flagged stdout: {}", flagged_stdout);
+
+    // Without the flag this repository takes the dedup form...
+    assert!(
+        default_output.status.success(),
+        "the default rebase should succeed, got: {}",
+        default_stdout
+    );
+    assert!(
+        default_stdout.contains("--fork-point"),
+        "this scenario should take the dedup form by default, got: {}",
+        default_stdout
+    );
+
+    // ...and with it, no branch does.
+    assert!(
+        flagged_output.status.success(),
+        "rebase --no-fork-point should succeed.\nstdout: {}\nstderr: {}",
+        flagged_stdout,
+        flagged_stderr
+    );
+    assert!(
+        !flagged_stdout.contains("--fork-point"),
+        "no invocation should consult the reflog under --no-fork-point, got: {}",
+        flagged_stdout
+    );
+    assert!(
+        branch_1_command.contains("--empty=drop --no-rebase-merges --onto master "),
+        "some_branch_1 should use the frozen form, got: {}",
+        branch_1_command
+    );
+    assert!(
+        branch_2_command.contains("--empty=drop --no-rebase-merges --onto some_branch_1 "),
+        "some_branch_2 should use the frozen form, got: {}",
+        branch_2_command
+    );
+
+    // The chain still ends up correct.
+    assert!(
+        porcelain.is_empty(),
+        "the working tree should be clean after the rebase, got: {}",
+        porcelain
+    );
+    assert!(
+        branch_2_log.contains("master advances"),
+        "some_branch_2 should contain master's new commit, got log:\n{}",
+        branch_2_log
+    );
+    assert!(
+        branch_2_log.contains("commit on some_branch_1"),
+        "some_branch_2 should sit on top of its parent, got log:\n{}",
+        branch_2_log
+    );
+
+    teardown_git_repo(repo_name);
+}
