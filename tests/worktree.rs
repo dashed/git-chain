@@ -434,3 +434,151 @@ fn checkout_succeeds_when_worktree_holds_unrelated_branch() {
     fs::remove_dir_all(&worktree_dir).ok();
     teardown_git_repo(repo_name);
 }
+
+/// A worktree part-way through a rebase still holds its branch (REBASE_AUDIT M8).
+///
+/// Mid-rebase the worktree's HEAD is detached, so a check that only reads HEAD sees nothing
+/// and git-chain used to switch to the branch anyway — while git itself refuses, because it
+/// also consults the rebase state (`is_worktree_being_rebased`, worktree.c). Both the
+/// navigation commands and the chain-rebase pre-flight must now refuse.
+#[test]
+fn commands_refuse_a_branch_being_rebased_in_another_worktree() {
+    let repo_name = "worktree_mid_rebase_holds_branch";
+    let worktree_dir = generate_path_to_repo(format!("{}_worktree", repo_name));
+    fs::remove_dir_all(&worktree_dir).ok();
+
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    create_branch(&repo, "feature-1");
+    checkout_branch(&repo, "feature-1");
+    create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+    commit_all(&repo, "commit on feature-1");
+
+    // feature-2 collides with master, so a rebase started inside the worktree stops there.
+    create_branch(&repo, "feature-2");
+    checkout_branch(&repo, "feature-2");
+    create_new_file(&path_to_repo, "shared.txt", "feature 2 version");
+    commit_all(&repo, "commit on feature-2");
+
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "feature-1", "feature-2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "shared.txt", "master version");
+    commit_all(&repo, "conflicting commit on master");
+
+    let worktree_output = run_git_command(
+        &path_to_repo,
+        vec![
+            "worktree",
+            "add",
+            &format!("../{}_worktree", repo_name),
+            "feature-2",
+        ],
+    );
+    assert!(
+        worktree_output.status.success(),
+        "git worktree add should succeed but got: {}",
+        String::from_utf8_lossy(&worktree_output.stderr)
+    );
+
+    checkout_branch(&repo, "feature-1");
+
+    // Start a conflicting rebase inside the linked worktree: its HEAD goes detached while
+    // .git/worktrees/<name>/rebase-merge/head-name still names feature-2.
+    let worktree_rebase = run_git_command(&worktree_dir, vec!["rebase", "master"]);
+    assert!(
+        !worktree_rebase.status.success(),
+        "the rebase inside the worktree should stop on the conflict, got: {}",
+        String::from_utf8_lossy(&worktree_rebase.stderr)
+    );
+
+    let worktree_head = run_git_command(&worktree_dir, vec!["rev-parse", "--abbrev-ref", "HEAD"]);
+    let worktree_head_name = String::from_utf8_lossy(&worktree_head.stdout)
+        .trim()
+        .to_string();
+
+    // Navigation to the mid-rebase branch.
+    let nav_output = run_test_bin_expect_err(&path_to_repo, vec!["last"]);
+    let nav_stderr = String::from_utf8_lossy(&nav_output.stderr).to_string();
+
+    // And the chain-rebase pre-flight.
+    let rebase_output = run_test_bin_expect_err(&path_to_repo, vec!["rebase"]);
+    let rebase_stderr = String::from_utf8_lossy(&rebase_output.stderr).to_string();
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    println!("=== TEST DIAGNOSTICS ===");
+    println!("worktree HEAD while rebasing: {}", worktree_head_name);
+    println!("NAV STDERR: {}", nav_stderr);
+    println!("REBASE STDERR: {}", rebase_stderr);
+    println!("Current branch: {}", get_current_branch_name(&repo));
+    println!("STATE FILE EXISTS: {}", state_file.exists());
+    println!("EXPECTED: both refuse, naming feature-2 and the worktree");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: mid-rebase worktree");
+    // assert!(false, "nav stderr: {}", nav_stderr);
+    // assert!(false, "rebase stderr: {}", rebase_stderr);
+
+    // Precondition: the worktree's HEAD really is detached, so only the rebase state names
+    // the branch.
+    assert_eq!(
+        worktree_head_name, "HEAD",
+        "the worktree should have a detached HEAD while rebasing, got: {}",
+        worktree_head_name
+    );
+
+    assert!(
+        !nav_output.status.success(),
+        "navigation should refuse a branch being rebased elsewhere"
+    );
+    assert!(
+        nav_stderr.contains("feature-2"),
+        "the navigation error should name the branch but got: {}",
+        nav_stderr
+    );
+    assert!(
+        nav_stderr.contains("checked out in another worktree"),
+        "the navigation error should explain the worktree conflict but got: {}",
+        nav_stderr
+    );
+    assert!(
+        nav_stderr.contains("worktree_mid_rebase_holds_branch_worktree"),
+        "the navigation error should name the worktree path but got: {}",
+        nav_stderr
+    );
+    assert_eq!(
+        &get_current_branch_name(&repo),
+        "feature-1",
+        "HEAD should remain on the original branch"
+    );
+
+    assert!(
+        !rebase_output.status.success(),
+        "the chain rebase pre-flight should refuse too"
+    );
+    assert!(
+        rebase_stderr.contains("feature-2"),
+        "the pre-flight error should name the branch but got: {}",
+        rebase_stderr
+    );
+    assert!(
+        rebase_stderr.contains("checked out in another worktree"),
+        "the pre-flight error should explain the worktree conflict but got: {}",
+        rebase_stderr
+    );
+    assert!(
+        !state_file.exists(),
+        "the pre-flight refuses before any state is written, but {} exists",
+        state_file.display()
+    );
+
+    fs::remove_dir_all(&worktree_dir).ok();
+    teardown_git_repo(repo_name);
+}

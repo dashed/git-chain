@@ -36,6 +36,7 @@
 //! | `audit_m7_status_reports_a_live_git_rebase`              | M7 · MEDIUM   | guard   |
 //! | `audit_m5_continue_refuses_after_the_chain_changed`      | M5 · MEDIUM   | guard   |
 //! | `audit_m5_continue_refuses_after_the_chain_is_deleted`   | M5 · MEDIUM   | guard   |
+//! | `audit_m8_chain_rebase_state_is_shared_across_worktrees` | M8 · MEDIUM   | guard   |
 //!
 //! Rows marked "guard" were written directly against the fixed behavior — they
 //! never characterized a defect, so there is nothing to invert.
@@ -3731,4 +3732,196 @@ fn state_original_ref(state_file: &Path, branch_name: &str) -> String {
         + needle.len();
     let end = at + contents[at..].find('"').unwrap();
     contents[at..end].to_string()
+}
+
+// ---------------------------------------------------------------------------
+// M8 · MEDIUM — one chain rebase state per repository, not per worktree
+// ---------------------------------------------------------------------------
+
+/// Guards **M8**: the state file lives in the repository's common directory, so a rebase
+/// started in one worktree is visible from every other.
+///
+/// The branches a chain rebase rewrites are shared by every worktree, but the state that
+/// recorded the rebase was not: a paused rebase started in a linked worktree was invisible
+/// from the main one, which would happily start a second rebase over the same branches, and
+/// none of the recovery commands could see the first.
+#[cfg(unix)]
+#[test]
+fn audit_m8_chain_rebase_state_is_shared_across_worktrees() {
+    let repo_name = "audit_m8_shared_state";
+    let worktree_dir = generate_path_to_repo(format!("{}_worktree", repo_name));
+    std::fs::remove_dir_all(&worktree_dir).ok();
+
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+    first_commit_all(&repo, "first commit");
+
+    create_branch(&repo, "some_branch_1");
+    checkout_branch(&repo, "some_branch_1");
+    create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+    commit_all(&repo, "commit on some_branch_1");
+
+    create_branch(&repo, "some_branch_2");
+    checkout_branch(&repo, "some_branch_2");
+    create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+    commit_all(&repo, "commit on some_branch_2");
+
+    run_test_bin_expect_ok(
+        &path_to_repo,
+        vec![
+            "setup",
+            "chain_name",
+            "master",
+            "some_branch_1",
+            "some_branch_2",
+        ],
+    );
+
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "master_extra.txt", "master moved on");
+    commit_all(&repo, "commit on master");
+
+    // A linked worktree on a branch outside the chain, so the chain rebase can run there.
+    let worktree_output = run_git_command(
+        &path_to_repo,
+        vec![
+            "worktree",
+            "add",
+            "-b",
+            "side",
+            &format!("../{}_worktree", repo_name),
+            "master",
+        ],
+    );
+    assert!(
+        worktree_output.status.success(),
+        "git worktree add should succeed but got: {}",
+        String::from_utf8_lossy(&worktree_output.stderr)
+    );
+
+    // Pause a chain rebase from inside the linked worktree.
+    install_pre_rebase_hook_refusing(&path_to_repo, "some_branch_2");
+    let checkout_output = run_git_command(&worktree_dir, vec!["checkout", "some_branch_1"]);
+    assert!(
+        checkout_output.status.success(),
+        "checking out some_branch_1 in the worktree should succeed, got: {}",
+        combined_output(&checkout_output)
+    );
+
+    let branch_1_original = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let worktree_rebase = run_test_bin(&worktree_dir, vec!["rebase"]);
+    let worktree_text = combined_output(&worktree_rebase);
+
+    let shared_state = path_to_repo.join(".git/chain-rebase-state.json");
+    let per_worktree_states = std::fs::read_dir(path_to_repo.join(".git/worktrees"))
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().join("chain-rebase-state.json").exists())
+                .count()
+        })
+        .unwrap_or(0);
+
+    // Now look at it from the MAIN worktree. It has to sit on a chain branch of its own:
+    // `git chain rebase` resolves the chain from the current branch before it consults the
+    // in-progress guard, and some_branch_1 is held by the linked worktree.
+    checkout_branch(&repo, "some_branch_2");
+
+    let blocked_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let blocked_text = combined_output(&blocked_output);
+
+    let status_output = run_test_bin(&path_to_repo, vec!["rebase", "--status"]);
+    let status_text = combined_output(&status_output);
+
+    println!("=== M8 DIAGNOSTICS ===");
+    println!("WORKTREE REBASE OUTPUT: {}", worktree_text);
+    println!("state in the common dir: {}", shared_state.exists());
+    println!("per-worktree state files: {}", per_worktree_states);
+    println!("MAIN WORKTREE rebase: {}", blocked_text);
+    println!("MAIN WORKTREE status: {}", status_text);
+    println!("EXPECTED: one shared state, visible from both worktrees");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: M8 shared state");
+    // assert!(false, "worktree rebase: {}", worktree_text);
+    // assert!(false, "main rebase: {}", blocked_text);
+
+    assert!(
+        !worktree_rebase.status.success(),
+        "the hook should pause the rebase started in the worktree, got: {}",
+        worktree_text
+    );
+    // The state is written once, in the common directory.
+    assert!(
+        shared_state.exists(),
+        "the state should live in the common directory, but {} does not exist",
+        shared_state.display()
+    );
+    assert_eq!(
+        per_worktree_states, 0,
+        "no per-worktree state file should be written any more"
+    );
+
+    // The main worktree sees the same rebase: the guard blocks a second one...
+    assert!(
+        !blocked_output.status.success(),
+        "the main worktree should be blocked by the in-progress rebase, got: {}",
+        blocked_text
+    );
+    assert!(
+        blocked_text.contains("A chain rebase is already in progress"),
+        "the main worktree should report the in-progress rebase, got: {}",
+        blocked_text
+    );
+
+    // ...and --status reports it.
+    assert!(
+        status_output.status.success(),
+        "rebase --status should succeed from the main worktree, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("Chain Rebase Status: chain_name"),
+        "the main worktree should see the chain rebase, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("some_branch_2"),
+        "the report should list the chain's branches, got: {}",
+        status_text
+    );
+
+    // And recovery works from the main worktree, over refs the worktree rewrote.
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!(
+        "some_branch_1 restored: {} ({} -> {})",
+        branch_1_after == branch_1_original,
+        branch_1_original,
+        branch_1_after
+    );
+
+    assert!(
+        abort_output.status.success(),
+        "--abort from the main worktree should recover the rebase, got: {}",
+        abort_text
+    );
+    assert_eq!(
+        branch_1_after, branch_1_original,
+        "some_branch_1 should be restored to {}, got {}",
+        branch_1_original, branch_1_after
+    );
+    assert!(
+        !shared_state.exists(),
+        "a successful --abort should consume the shared state"
+    );
+
+    std::fs::remove_dir_all(&worktree_dir).ok();
+    teardown_git_repo(repo_name);
 }

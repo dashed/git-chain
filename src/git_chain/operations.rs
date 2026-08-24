@@ -8,7 +8,7 @@ use git2::{Error, RepositoryState};
 use super::GitChain;
 use crate::error::ErrorExt;
 use crate::rebase_state::{
-    delete_state, read_state, state_exists, state_file_path, write_state, STATE_VERSION,
+    delete_state, read_state, state_exists, state_file_path_for_read, write_state, STATE_VERSION,
 };
 use crate::types::{
     BranchRebaseStatus, BranchState, ChainRebaseState, RebaseStateOptions, SquashedRebaseHandling,
@@ -1703,7 +1703,7 @@ impl GitChain {
             ));
         }
 
-        let path = state_file_path(&self.repo);
+        let path = state_file_path_for_read(&self.repo);
 
         // Deliberately not parsed: working on a corrupt or unsupported file is the point.
         delete_state(&self.repo)?;

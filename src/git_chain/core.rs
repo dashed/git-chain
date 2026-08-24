@@ -172,6 +172,19 @@ impl GitChain {
                     return Ok(Some(worktree_path));
                 }
             }
+
+            // A worktree part-way through a rebase has a detached HEAD, so the check above
+            // sees nothing — but the branch is still that worktree's, and git refuses to
+            // check it out elsewhere. git tests the same files (`is_worktree_being_rebased`
+            // in worktree.c), reading the branch from the rebase state rather than HEAD.
+            for rebase_dir in ["rebase-merge", "rebase-apply"] {
+                let head_name = git_dir.join(rebase_dir).join("head-name");
+                if let Ok(contents) = fs::read_to_string(&head_name) {
+                    if contents.trim_end() == format!("refs/heads/{}", branch_name) {
+                        return Ok(Some(worktree_path));
+                    }
+                }
+            }
         }
 
         Ok(None)

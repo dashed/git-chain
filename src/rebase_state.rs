@@ -9,19 +9,53 @@ use crate::types::ChainRebaseState;
 /// Schema version this build writes and accepts.
 pub const STATE_VERSION: u32 = 1;
 
-/// Returns the path to the chain rebase state file.
+/// Returns the path the chain rebase state is written to.
+///
+/// This is the repository's *common* directory, not the per-worktree git directory. The two
+/// are the same in the main worktree; in a linked worktree they differ, and a per-worktree
+/// state file meant a rebase started in one worktree was invisible to every other — while the
+/// branches it was rewriting were shared by all of them. One state per repository makes the
+/// in-progress guard, `--status` and the recovery commands agree with the refs they protect
+/// (REBASE_AUDIT M8).
 pub fn state_file_path(repo: &Repository) -> PathBuf {
+    repo.commondir().join("chain-rebase-state.json")
+}
+
+/// The per-worktree location used before the state moved to the common directory.
+///
+/// Identical to [`state_file_path`] in the main worktree, so it only names a distinct file
+/// when running from a linked worktree.
+fn legacy_state_file_path(repo: &Repository) -> PathBuf {
     repo.path().join("chain-rebase-state.json")
+}
+
+/// Returns the state file to read: the shared one, or a leftover from before the move.
+///
+/// A rebase paused by an older build of git-chain inside a linked worktree left its state at
+/// the legacy path. Reading it there keeps that rebase recoverable; writes and deletes always
+/// use the shared path, so the leftover is cleaned up rather than perpetuated.
+pub fn state_file_path_for_read(repo: &Repository) -> PathBuf {
+    let path = state_file_path(repo);
+    if path.exists() {
+        return path;
+    }
+
+    let legacy = legacy_state_file_path(repo);
+    if legacy.exists() {
+        return legacy;
+    }
+
+    path
 }
 
 /// Checks if a chain rebase state file exists.
 pub fn state_exists(repo: &Repository) -> bool {
-    state_file_path(repo).exists()
+    state_file_path_for_read(repo).exists()
 }
 
 /// Reads and deserializes the chain rebase state file.
 pub fn read_state(repo: &Repository) -> Result<ChainRebaseState, Error> {
-    let path = state_file_path(repo);
+    let path = state_file_path_for_read(repo);
     let contents = fs::read_to_string(&path).map_err(|e| {
         Error::from_str(&format!(
             "Failed to read chain rebase state file at {}: {}",
@@ -60,7 +94,10 @@ pub fn read_state(repo: &Repository) -> Result<ChainRebaseState, Error> {
 /// if the process is killed mid-write.
 pub fn write_state(repo: &Repository, state: &ChainRebaseState) -> Result<(), Error> {
     let path = state_file_path(repo);
-    let tmp_path = path.with_extension("json.tmp");
+    // Include the pid: two git-chain processes writing state in the same repository would
+    // otherwise share one temp file, and the loser's partial write could be renamed into
+    // place. The rename itself stays the atomic step (REBASE_AUDIT L6).
+    let tmp_path = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let contents = serde_json::to_string_pretty(state)
         .map_err(|e| Error::from_str(&format!("Failed to serialize chain rebase state: {}", e)))?;
     fs::write(&tmp_path, &contents).map_err(|e| {
@@ -81,16 +118,20 @@ pub fn write_state(repo: &Repository, state: &ChainRebaseState) -> Result<(), Er
 }
 
 /// Deletes the chain rebase state file if it exists.
+///
+/// Both locations are cleared, so finishing or abandoning a rebase also removes a leftover
+/// written by an older build inside a linked worktree.
 pub fn delete_state(repo: &Repository) -> Result<(), Error> {
-    let path = state_file_path(repo);
-    if path.exists() {
-        fs::remove_file(&path).map_err(|e| {
-            Error::from_str(&format!(
-                "Failed to delete chain rebase state file at {}: {}",
-                path.display(),
-                e
-            ))
-        })?;
+    for path in [state_file_path(repo), legacy_state_file_path(repo)] {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| {
+                Error::from_str(&format!(
+                    "Failed to delete chain rebase state file at {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+        }
     }
     Ok(())
 }
