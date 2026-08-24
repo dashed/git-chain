@@ -63,7 +63,7 @@ impl GitChain {
             Err(e) => return Err(e),
         };
 
-        let head = head.as_ref().and_then(|h| h.shorthand());
+        let head = head.as_ref().and_then(|h| h.shorthand().ok());
 
         match head {
             Some(branch_name) => Ok(branch_name.to_string()),
@@ -92,7 +92,7 @@ impl GitChain {
         let mut entries = vec![];
 
         local_config.entries(None)?.for_each(|entry| {
-            if let Some(key) = entry.name() {
+            if let Ok(key) = entry.name() {
                 if regexp.is_match(key) && entry.has_value() {
                     let key = key.to_string();
                     let value = entry.value().unwrap().to_string();
@@ -146,7 +146,12 @@ impl GitChain {
         candidates.push((common_dir.clone(), main_worktree_path));
 
         // All linked worktrees.
-        for worktree_name in self.repo.worktrees()?.iter().flatten() {
+        for worktree_name in self
+            .repo
+            .worktrees()?
+            .iter()
+            .filter_map(|name| name.ok().flatten())
+        {
             let git_dir = common_dir.join("worktrees").join(worktree_name);
             let worktree_path = self
                 .repo
