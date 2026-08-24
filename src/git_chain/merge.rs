@@ -555,9 +555,11 @@ impl GitChain {
 
         // Check for uncommitted changes
         if self.dirty_working_directory()? {
+            let current_branch = self.get_current_branch_name()?;
             return Err(Error::from_str(&format!(
-            "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes in your working directory.\nPlease commit or stash them.",
-            chain_name.bold()
+            "🛑 Unable to merge branches for the chain: {}\nYou have uncommitted changes on branch {}.\nPlease commit or stash them.",
+            chain_name.bold(),
+            current_branch.bold()
         )));
         }
 

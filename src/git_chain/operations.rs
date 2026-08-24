@@ -435,10 +435,12 @@ impl GitChain {
 
         // 3. Check for dirty working directory
         if self.dirty_working_directory()? {
-            return Err(Error::from_str(
-                "You have uncommitted changes in your working directory.\n\
+            let current_branch = self.get_current_branch_name()?;
+            return Err(Error::from_str(&format!(
+                "You have uncommitted changes on branch {}.\n\
                  Please commit or stash them before continuing the chain rebase.",
-            ));
+                current_branch.bold()
+            )));
         }
 
         // 4. Load state
@@ -1337,9 +1339,11 @@ impl GitChain {
             }
 
             if self.dirty_working_directory()? {
+                let current_branch = self.get_current_branch_name()?;
                 return Err(Error::from_str(&format!(
-                    "🛑 Unable to back up branches for the chain: {}\nYou have uncommitted changes in your working directory.\nPlease commit or stash them.",
-                    chain.name
+                    "🛑 Unable to back up branches for the chain: {}\nYou have uncommitted changes on branch {}.\nPlease commit or stash them.",
+                    chain.name,
+                    current_branch.bold()
                 )));
             }
 
@@ -1462,9 +1466,11 @@ impl GitChain {
         }
 
         if self.dirty_working_directory()? {
-            return Err(Error::from_str(
-                "You have uncommitted changes in your working directory.",
-            ));
+            let current_branch = self.get_current_branch_name()?;
+            return Err(Error::from_str(&format!(
+                "You have uncommitted changes on branch {}.",
+                current_branch.bold()
+            )));
         }
 
         Ok(())
