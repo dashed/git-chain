@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-08-24
+
 ### Changed
 - After a chain rebase completes, git-chain now suggests running `git chain prune` when chain branches have become ancestors of the root branch (e.g. after a squash-merge reset)
 - Uncommitted-changes errors now name the branch the changes are on
