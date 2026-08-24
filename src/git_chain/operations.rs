@@ -370,6 +370,11 @@ impl GitChain {
                 } else {
                     println!("Chain {} is already up-to-date.", chain.name.bold());
                 }
+
+                self.print_prune_suggestion(
+                    &root_branch,
+                    chain.branches.iter().map(|b| b.branch_name.as_str()),
+                );
             }
         }
 
@@ -1093,6 +1098,41 @@ impl GitChain {
         Ok(())
     }
 
+    /// Suggest running `prune` for chain branches whose tips are already contained
+    /// in (ancestors of) the root branch. Best-effort: errors are treated as
+    /// "not an ancestor" — a missed suggestion must never fail a successful rebase.
+    fn print_prune_suggestion<'a>(
+        &self,
+        root_branch: &str,
+        branch_names: impl IntoIterator<Item = &'a str>,
+    ) {
+        let prunable: Vec<&str> = branch_names
+            .into_iter()
+            .filter(|branch_name| self.is_ancestor(branch_name, root_branch).unwrap_or(false))
+            .collect();
+
+        if prunable.is_empty() {
+            return;
+        }
+
+        println!();
+        println!(
+            "💡 The following branches are ancestors of the root branch {} and can be removed from the chain:",
+            root_branch.bold()
+        );
+        println!();
+
+        for branch_name in prunable {
+            println!("{}", branch_name);
+        }
+
+        println!();
+        println!(
+            "To remove them from the chain, run {} prune",
+            self.executable_name
+        );
+    }
+
     /// Print a summary report after rebase completion.
     fn print_rebase_summary(&self, state: &ChainRebaseState, num_of_rebase_operations: usize) {
         let completed = state
@@ -1130,6 +1170,11 @@ impl GitChain {
         } else {
             println!("Chain {} is already up-to-date.", state.chain_name.bold());
         }
+
+        self.print_prune_suggestion(
+            &state.root_branch,
+            state.branches.iter().map(|b| b.name.as_str()),
+        );
     }
 
     /// Create a backup branch for a named branch in a chain.

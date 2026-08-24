@@ -3,8 +3,9 @@ pub mod common;
 
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
-    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin_expect_err,
-    run_test_bin_expect_ok, run_test_bin_for_rebase, setup_git_repo, teardown_git_repo,
+    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin,
+    run_test_bin_expect_err, run_test_bin_expect_ok, run_test_bin_for_rebase, setup_git_repo,
+    teardown_git_repo,
 };
 
 #[test]
@@ -202,6 +203,342 @@ fn prune_nonexistent_chain() {
     assert!(
         stderr.contains("not part of any chain"),
         "stderr should indicate branch is not part of any chain, got: {}",
+        stderr
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_suggests_prune_when_branch_is_ancestor_of_root() {
+    let repo_name = "rebase_suggests_prune_when_branch_is_ancestor_of_root";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+
+        // add first commit to master
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create and checkout new branch named some_branch_1
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+
+        create_new_file(&path_to_repo, "file_1.txt", "contents 2");
+        commit_all(&repo, "message");
+
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+    };
+
+    // create and checkout new branch named some_branch_2
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "some_branch_2");
+
+        // create new file
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+
+        // add commit to branch some_branch_2
+        commit_all(&repo, "message");
+    };
+
+    // run git chain setup
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+    assert!(
+        output.status.success(),
+        "git chain setup should succeed, got exit code: {}",
+        output.status.code().unwrap_or(0)
+    );
+
+    // squash and merge some_branch_1 onto master.
+    // some_branch_1 becomes an ancestor of master once the rebase resets it to master.
+    checkout_branch(&repo, "master");
+    run_git_command(&path_to_repo, vec!["merge", "--squash", "some_branch_1"]);
+    commit_all(&repo, "squash merge");
+
+    // git chain rebase
+    checkout_branch(&repo, "some_branch_1");
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // The branch list of the suggestion is the text between its header and its footer.
+    // Both markers are asserted to exist below, so an empty section means a failed assertion
+    // rather than a silently skipped check.
+    let suggested_branches = stdout
+        .split_once("can be removed from the chain")
+        .map(|(_, after_header)| after_header)
+        .unwrap_or_default()
+        .split_once("To remove them from the chain")
+        .map(|(section, _)| section)
+        .unwrap_or_default()
+        .to_string();
+
+    println!("=== REBASE DIAGNOSTICS ===");
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+    println!("EXIT STATUS: {}", output.status.code().unwrap_or(0));
+    println!(
+        "Contains 'can be removed from the chain' in stdout: {}",
+        stdout.contains("can be removed from the chain")
+    );
+    println!(
+        "Contains 'To remove them from the chain' in stdout: {}",
+        stdout.contains("To remove them from the chain")
+    );
+    println!("SUGGESTED BRANCHES SECTION: {}", suggested_branches);
+    println!(
+        "Suggested branches section contains 'some_branch_1': {}",
+        suggested_branches.contains("some_branch_1")
+    );
+    println!(
+        "Suggested branches section contains 'some_branch_2': {}",
+        suggested_branches.contains("some_branch_2")
+    );
+    println!("Contains 'prune' in stdout: {}", stdout.contains("prune"));
+    println!(
+        "Contains 'Successfully rebased and updated' in stderr: {}",
+        stderr.contains("Successfully rebased and updated")
+    );
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: rebase prune suggestion section");
+    // assert!(false, "stdout: {}", stdout);
+    // assert!(false, "stderr: {}", stderr);
+    // assert!(false, "status code: {}", output.status.code().unwrap_or(0));
+
+    assert!(
+        output.status.success(),
+        "git chain rebase should succeed, got exit code: {}",
+        output.status.code().unwrap_or(0)
+    );
+    assert!(
+        stdout.contains("🎉 Successfully rebased chain chain_name"),
+        "stdout should report a successful rebase but got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("can be removed from the chain"),
+        "stdout should suggest removing merged branches from the chain but got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("To remove them from the chain"),
+        "stdout should tell the user how to remove the branches but got: {}",
+        stdout
+    );
+    assert!(
+        suggested_branches.contains("some_branch_1"),
+        "the suggestion should list the prunable branch some_branch_1 but listed: {}",
+        suggested_branches
+    );
+    assert!(
+        !suggested_branches.contains("some_branch_2"),
+        "the suggestion should not list some_branch_2, which is not merged into master, but listed: {}",
+        suggested_branches
+    );
+    assert!(
+        stdout.contains("prune"),
+        "stdout should mention the prune command but got: {}",
+        stdout
+    );
+    assert!(
+        stderr.contains("Successfully rebased and updated"),
+        "stderr should carry git's own successful rebase output but got: {}",
+        stderr
+    );
+
+    // The suggestion must be accurate: prune removes exactly the suggested branch.
+    let args: Vec<&str> = vec!["prune"];
+    let output = run_test_bin(&path_to_repo, args);
+
+    let prune_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let prune_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    println!("=== PRUNE DIAGNOSTICS ===");
+    println!("STDOUT: {}", prune_stdout);
+    println!("STDERR: {}", prune_stderr);
+    println!("EXIT STATUS: {}", output.status.code().unwrap_or(0));
+    println!("Prune stderr is empty: {}", prune_stderr.is_empty());
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: prune section");
+    // assert!(false, "prune stdout: {}", prune_stdout);
+    // assert!(false, "prune stderr: {}", prune_stderr);
+
+    assert!(
+        output.status.success(),
+        "git chain prune should succeed, got exit code: {}",
+        output.status.code().unwrap_or(0)
+    );
+    assert!(
+        prune_stdout.contains("some_branch_1"),
+        "prune should remove the suggested branch some_branch_1 but got: {}",
+        prune_stdout
+    );
+    assert!(
+        prune_stdout.contains("Pruned 1 branches."),
+        "prune should report exactly one pruned branch but got: {}",
+        prune_stdout
+    );
+    assert!(
+        prune_stderr.is_empty(),
+        "prune stderr should be empty but got: {}",
+        prune_stderr
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_does_not_suggest_prune_when_no_ancestor() {
+    let repo_name = "rebase_does_not_suggest_prune_when_no_ancestor";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        // create new file
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+
+        // add first commit to master
+        first_commit_all(&repo, "first commit");
+    };
+
+    assert_eq!(&get_current_branch_name(&repo), "master");
+
+    // create and checkout new branch named some_branch_1
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "message");
+    };
+
+    // create and checkout new branch named some_branch_2
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+    };
+
+    {
+        assert_eq!(&get_current_branch_name(&repo), "some_branch_2");
+
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "message");
+    };
+
+    // run git chain setup
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    let output = run_test_bin_expect_ok(&path_to_repo, args);
+    assert!(
+        output.status.success(),
+        "git chain setup should succeed, got exit code: {}",
+        output.status.code().unwrap_or(0)
+    );
+
+    // advance master with an unrelated commit, so the chain has something to rebase onto.
+    // Neither chain branch is merged into master, so nothing is prunable.
+    checkout_branch(&repo, "master");
+    {
+        create_new_file(&path_to_repo, "master_file.txt", "master contents");
+        commit_all(&repo, "master commit");
+    };
+
+    // git chain rebase
+    checkout_branch(&repo, "some_branch_1");
+    let args: Vec<&str> = vec!["rebase"];
+    let output = run_test_bin_for_rebase(&path_to_repo, args);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    println!("=== REBASE DIAGNOSTICS ===");
+    println!("STDOUT: {}", stdout);
+    println!("STDERR: {}", stderr);
+    println!("EXIT STATUS: {}", output.status.code().unwrap_or(0));
+    println!(
+        "Contains 'Successfully rebased chain' in stdout: {}",
+        stdout.contains("Successfully rebased chain")
+    );
+    println!(
+        "Contains 'can be removed from the chain' in stdout: {}",
+        stdout.contains("can be removed from the chain")
+    );
+    println!(
+        "Contains 'Successfully rebased and updated' in stderr: {}",
+        stderr.contains("Successfully rebased and updated")
+    );
+    println!("EXPECTED BEHAVIOR: rebase succeeds without suggesting prune");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: no prune suggestion section");
+    // assert!(false, "stdout: {}", stdout);
+    // assert!(false, "stderr: {}", stderr);
+    // assert!(false, "status code: {}", output.status.code().unwrap_or(0));
+
+    assert!(
+        output.status.success(),
+        "git chain rebase should succeed, got exit code: {}",
+        output.status.code().unwrap_or(0)
+    );
+    assert!(
+        stdout.contains("Successfully rebased chain"),
+        "stdout should report a successful rebase but got: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("can be removed from the chain"),
+        "stdout should not suggest pruning when no branch is merged into the root branch but got: {}",
+        stdout
+    );
+    assert!(
+        stderr.contains("Successfully rebased and updated"),
+        "stderr should carry git's own successful rebase output but got: {}",
         stderr
     );
 
