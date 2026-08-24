@@ -7,14 +7,22 @@
 //! were live; each was inverted when its fix landed, so it now fails if the behavior
 //! regresses.
 //!
-//! Current status: **F1 and F2 are both FIXED**, and both tests guard their fixes.
+//! Current status: **F1, F2, F3 and F4 are all FIXED**, and every test here guards a fix.
+//!
+//! ## F3 / F4 — the rest of the flag set is pinned
+//!
+//! `--empty=drop` replaced the vestigial `--keep-empty`, pinning the behavior chains rely on
+//! (a commit that *becomes* empty because its change is already upstream is dropped) instead
+//! of leaning on an unpinned default. Commits that *start* empty are governed by a different
+//! knob and are still kept. `--no-rebase-merges` pins the flattening git-chain has always
+//! relied on so `rebase.rebaseMerges=true` cannot change chain semantics mid-run.
 //! `audit_f1_falls_back_to_the_frozen_fork_point` additionally guards the safety valve on
 //! the F1 fix: when git's fork-point calculation is unavailable, the pre-computed SHA is
 //! used and the replay window stays exactly what it always was.
 //!
 //! ## F1 — git's patch-id skipping is restored (FIXED)
 //!
-//! git-chain used to run `git rebase --keep-empty --onto <parent> <fork_point_sha> <branch>`.
+//! git-chain used to run `git rebase --onto <parent> <fork_point_sha> <branch>`.
 //! Because the fork point is always an ancestor of `<branch>`, the left side of the `A...B`
 //! symmetric difference that `sequencer_make_script` walks was empty, so `revs.cherry_mark`
 //! could never mark a commit PATCHSAME. git itself never passes the fork point as
@@ -94,7 +102,7 @@ fn git_stdout(path_to_repo: &Path, arguments: Vec<&str>) -> String {
 fn build_f1_scenario(repo: &Repository, path_to_repo: &Path) {
     // Pin the two rebase knobs that would otherwise let ambient user config decide the outcome.
     // `rebase.backend` matters because the apply backend skips already-applied commits silently
-    // (no "skipped previously applied commit" warning), and git-chain's own `--keep-empty`
+    // (no "skipped previously applied commit" warning), and git-chain's own `--empty=drop`
     // forces the merge backend anyway — so pinning `merge` keeps both halves comparable.
     // `rebase.updateRefs` is pinned off so this test isolates F1 from F2.
     for (key, value) in [("rebase.backend", "merge"), ("rebase.updateRefs", "false")] {
@@ -250,7 +258,8 @@ fn audit_f1_chain_rebase_skips_already_applied_commits() {
     println!(
         "stdout shows the dedup form (parent ref as <upstream>): {}",
         chain_stdout.contains(
-            "git -c rebase.updateRefs=false rebase --keep-empty --fork-point --onto b1 b1 b2"
+            "git -c rebase.updateRefs=false rebase --empty=drop --no-rebase-merges --fork-point \
+             --onto b1 b1 b2"
         )
     );
     println!(
@@ -288,7 +297,8 @@ fn audit_f1_chain_rebase_skips_already_applied_commits() {
     // the duplicate PATCHSAME, with `--fork-point` keeping the replay window unchanged.
     assert!(
         chain_stdout.contains(
-            "git -c rebase.updateRefs=false rebase --keep-empty --fork-point --onto b1 b1 b2"
+            "git -c rebase.updateRefs=false rebase --empty=drop --no-rebase-merges --fork-point \
+             --onto b1 b1 b2"
         ),
         "stdout should echo the dedup rebase invocation for b2 but got: {}",
         chain_stdout
@@ -359,7 +369,8 @@ fn audit_f1_chain_rebase_skips_already_applied_commits() {
         &path_to_git_repo,
         vec![
             "rebase",
-            "--keep-empty",
+            "--empty=drop",
+            "--no-rebase-merges",
             "--onto",
             "master",
             &merge_base_master_b1,
@@ -834,7 +845,7 @@ fn audit_f1_falls_back_to_the_frozen_fork_point() {
         branch_2_command
     );
     assert!(
-        branch_2_command.contains("--keep-empty --onto some_branch_1 "),
+        branch_2_command.contains("--empty=drop --no-rebase-merges --onto some_branch_1 "),
         "some_branch_2 should be rebased onto its parent with the frozen SHA as <upstream>, but \
          its command was: {}",
         branch_2_command
@@ -873,6 +884,269 @@ fn audit_f1_falls_back_to_the_frozen_fork_point() {
         !branch_2_log.contains("B on some_branch_1"),
         "the superseded copy of the parent's commit should have been dropped, got log:\n{}",
         branch_2_log
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// F3: the two kinds of "empty" are governed by different flags, and the flag set encodes
+/// both — a commit that BECOMES empty is dropped, one that STARTS empty is kept.
+///
+/// `--empty=drop` controls only the former. git-rebase.adoc is explicit: "commits which
+/// start empty are kept (unless `--no-keep-empty` is specified)", and `keep_empty` defaults
+/// to 1 (`builtin/rebase.c:143`). That is why replacing the vestigial `--keep-empty` with
+/// `--empty=drop` preserves behavior rather than changing it — and this test pins both
+/// halves of the distinction at once, so a future flag edit cannot quietly break either.
+#[test]
+fn audit_f3_keeps_start_empty_commits_and_drops_become_empty_ones() {
+    let repo_name = "audit_f3_empty_commit_handling";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    create_new_file(&path_to_repo, "hello.txt", "hello");
+    first_commit_all(&repo, "base");
+
+    // b1 carries a change that master will later absorb, so b2's copy of it becomes empty.
+    create_branch(&repo, "b1");
+    checkout_branch(&repo, "b1");
+    create_new_file(&path_to_repo, "shared.txt", "shared content");
+    commit_all(&repo, "SHARED change on b1");
+
+    create_branch(&repo, "b2");
+    checkout_branch(&repo, "b2");
+    create_new_file(&path_to_repo, "own.txt", "own");
+    commit_all(&repo, "OWN change on b2");
+
+    // A deliberately empty commit: it starts empty, so it must survive the rebase.
+    let empty_output = run_git_command(
+        &path_to_repo,
+        vec!["commit", "--allow-empty", "-m", "DELIBERATELY EMPTY on b2"],
+    );
+    assert!(
+        empty_output.status.success(),
+        "creating the empty commit should succeed, stderr: {}",
+        String::from_utf8_lossy(&empty_output.stderr)
+    );
+
+    run_test_bin_expect_ok(
+        &path_to_repo,
+        vec!["setup", "audit_chain", "master", "b1", "b2"],
+    );
+
+    // Squash-merge b1 into master: b1's change is now upstream, so replaying b2's inherited
+    // copy of it produces nothing.
+    checkout_branch(&repo, "master");
+    let merge_output = run_git_command(&path_to_repo, vec!["merge", "--squash", "b1"]);
+    assert!(
+        merge_output.status.success(),
+        "the squash merge should succeed, stderr: {}",
+        String::from_utf8_lossy(&merge_output.stderr)
+    );
+    commit_all(&repo, "squash merge of b1 into master");
+
+    checkout_branch(&repo, "b1");
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_stdout = String::from_utf8_lossy(&rebase_output.stdout).to_string();
+    let rebase_stderr = String::from_utf8_lossy(&rebase_output.stderr).to_string();
+
+    let b2_log = git_stdout(&path_to_repo, vec!["log", "--format=%s", "b2"]);
+
+    println!("=== F3 DIAGNOSTICS ===");
+    println!("REBASE STDOUT: {}", rebase_stdout);
+    println!("REBASE STDERR: {}", rebase_stderr);
+    println!("EXIT SUCCESS: {}", rebase_output.status.success());
+    println!("b2 log:\n{}", b2_log);
+    println!(
+        "start-empty commit survived: {}",
+        b2_log.contains("DELIBERATELY EMPTY on b2")
+    );
+    println!(
+        "echoed command carries --empty=drop: {}",
+        rebase_stdout.contains("--empty=drop")
+    );
+    println!(
+        "echoed command carries --no-rebase-merges: {}",
+        rebase_stdout.contains("--no-rebase-merges")
+    );
+    println!("EXPECTED: start-empty kept, become-empty dropped");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: F3 empty handling");
+    // assert!(false, "stdout: {}", rebase_stdout);
+    // assert!(false, "b2 log: {}", b2_log);
+
+    assert!(
+        rebase_output.status.success(),
+        "the chain rebase should succeed.\nstdout: {}\nstderr: {}",
+        rebase_stdout,
+        rebase_stderr
+    );
+    // The flag set itself, echoed by git-chain.
+    assert!(
+        rebase_stdout.contains("--empty=drop"),
+        "the rebase invocation should pin --empty=drop, got: {}",
+        rebase_stdout
+    );
+    assert!(
+        rebase_stdout.contains("--no-rebase-merges"),
+        "the rebase invocation should pin --no-rebase-merges, got: {}",
+        rebase_stdout
+    );
+    // Starts empty -> kept.
+    assert!(
+        b2_log.contains("DELIBERATELY EMPTY on b2"),
+        "a commit that starts empty must survive the rebase, got b2 log:\n{}",
+        b2_log
+    );
+    // b2's own real work is untouched.
+    assert!(
+        b2_log.contains("OWN change on b2"),
+        "b2 should still carry its own commit, got b2 log:\n{}",
+        b2_log
+    );
+    // Becomes empty -> dropped. b2 inherited b1's change, which master now already has.
+    assert_eq!(
+        b2_log.matches("SHARED change on b1").count(),
+        0,
+        "the inherited change is already upstream and must be dropped, got b2 log:\n{}",
+        b2_log
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// F4: `rebase.rebaseMerges=true` must not change chain-rebase semantics.
+///
+/// Without `--no-rebase-merges`, that config makes git preserve merge topology inside a
+/// chain branch — silently giving a different result than the same command run by a user
+/// without the config. git-chain has always flattened; the flag pins that default so the
+/// outcome is a property of git-chain rather than of the user's config, the same
+/// isolation principle as `-c rebase.updateRefs=false` (REBASE_AUDIT.md F4).
+#[test]
+fn audit_f4_rebase_merges_config_cannot_change_chain_semantics() {
+    let repo_name = "audit_f4_rebase_merges_pinned";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    // The config a merge-preserving user is likely to have enabled (git 2.41+).
+    let config_output =
+        run_git_command(&path_to_repo, vec!["config", "rebase.rebaseMerges", "true"]);
+    assert!(
+        config_output.status.success(),
+        "setting rebase.rebaseMerges should succeed, stderr: {}",
+        String::from_utf8_lossy(&config_output.stderr)
+    );
+
+    create_new_file(&path_to_repo, "hello.txt", "hello");
+    first_commit_all(&repo, "base");
+
+    create_branch(&repo, "b1");
+    checkout_branch(&repo, "b1");
+    create_new_file(&path_to_repo, "f1.txt", "contents 1");
+    commit_all(&repo, "c1 on b1");
+
+    // Build a real merge commit inside b1, which is what the config would preserve.
+    create_branch(&repo, "side");
+    checkout_branch(&repo, "side");
+    create_new_file(&path_to_repo, "side.txt", "side");
+    commit_all(&repo, "commit on side");
+
+    checkout_branch(&repo, "b1");
+    let merge_output = run_git_command(
+        &path_to_repo,
+        vec!["merge", "--no-ff", "-m", "MERGE side into b1", "side"],
+    );
+    assert!(
+        merge_output.status.success(),
+        "creating the merge commit should succeed, stderr: {}",
+        String::from_utf8_lossy(&merge_output.stderr)
+    );
+
+    create_branch(&repo, "b2");
+    checkout_branch(&repo, "b2");
+    create_new_file(&path_to_repo, "f2.txt", "contents 2");
+    commit_all(&repo, "c2 on b2");
+
+    run_test_bin_expect_ok(
+        &path_to_repo,
+        vec!["setup", "audit_chain", "master", "b1", "b2"],
+    );
+
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "m.txt", "m");
+    commit_all(&repo, "master advances");
+    checkout_branch(&repo, "b1");
+
+    let merges_before = git_stdout(
+        &path_to_repo,
+        vec!["rev-list", "--merges", "--count", "master..b1"],
+    );
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_stdout = String::from_utf8_lossy(&rebase_output.stdout).to_string();
+    let rebase_stderr = String::from_utf8_lossy(&rebase_output.stderr).to_string();
+
+    let merges_after = git_stdout(
+        &path_to_repo,
+        vec!["rev-list", "--merges", "--count", "master..b1"],
+    );
+    let b1_log = git_stdout(&path_to_repo, vec!["log", "--format=%s", "b1"]);
+
+    println!("=== F4 DIAGNOSTICS ===");
+    println!("rebase.rebaseMerges is set to true in this repo");
+    println!("REBASE STDOUT: {}", rebase_stdout);
+    println!("REBASE STDERR: {}", rebase_stderr);
+    println!("EXIT SUCCESS: {}", rebase_output.status.success());
+    println!("merge commits in master..b1 before: {}", merges_before);
+    println!("merge commits in master..b1 after:  {}", merges_after);
+    println!(
+        "echoed command carries --no-rebase-merges: {}",
+        rebase_stdout.contains("--no-rebase-merges")
+    );
+    println!("b1 log:\n{}", b1_log);
+    println!("EXPECTED: the merge is flattened despite the config");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: F4 rebaseMerges pinned");
+    // assert!(false, "stdout: {}", rebase_stdout);
+    // assert!(false, "merges before={} after={}", merges_before, merges_after);
+
+    // Precondition: there really was a merge to preserve.
+    assert_eq!(
+        merges_before, "1",
+        "the scenario requires exactly one merge commit in b1, got: {}",
+        merges_before
+    );
+    assert!(
+        rebase_output.status.success(),
+        "the chain rebase should succeed despite the config.\nstdout: {}\nstderr: {}",
+        rebase_stdout,
+        rebase_stderr
+    );
+    assert!(
+        rebase_stdout.contains("--no-rebase-merges"),
+        "the rebase invocation should pin --no-rebase-merges, got: {}",
+        rebase_stdout
+    );
+    // The pinned default wins over the config: the topology is flattened.
+    assert_eq!(
+        merges_after, "0",
+        "the merge commit should have been flattened, but master..b1 still has {} merge(s)",
+        merges_after
+    );
+    // Flattening keeps the content: the side branch's commit is replayed inline.
+    assert!(
+        b1_log.contains("commit on side"),
+        "the merged-in commit should be replayed onto b1, got b1 log:\n{}",
+        b1_log
+    );
+    assert!(
+        b1_log.contains("master advances"),
+        "b1 should be replanted on the advanced master, got b1 log:\n{}",
+        b1_log
     );
 
     teardown_git_repo(repo_name);

@@ -473,6 +473,36 @@ impl GitChain {
     /// consults the parent's reflog, which can be expired or misleading. When the two
     /// disagree — or the calculation fails outright — the frozen form is used and the
     /// replay window is exactly what it has always been.
+    ///
+    /// # The rest of the flag set
+    ///
+    /// `--empty=drop` pins what a chain rebase needs: a commit that *becomes* empty because
+    /// the parent already carries its changes — the normal result of a squash-merge upstream
+    /// — is dropped rather than left as a stray empty commit. This was already the effective
+    /// behavior, but only via an unpinned default. It also keeps forcing the merge backend,
+    /// which the previous `--keep-empty` did as a side effect: `builtin/rebase.c:1509-1510`
+    /// runs `imply_merge(&options, "--empty")` for any explicit `--empty`.
+    ///
+    /// It replaces `--keep-empty`, which has been a no-op since git 2.26 (REBASE_AUDIT.md
+    /// F3). The two flags govern different things and are not alternatives: `--empty`
+    /// controls commits that *become* empty, while commits that *start* empty are kept
+    /// unless `--no-keep-empty` is passed — `keep_empty` defaults to 1
+    /// (`builtin/rebase.c:143`), and git-rebase.adoc says so outright. Dropping
+    /// `--keep-empty` therefore changes nothing about deliberately-empty commits: they are
+    /// still kept.
+    ///
+    /// `--no-rebase-merges` pins the flattening git-chain has always relied on, so a user's
+    /// `rebase.rebaseMerges=true` cannot change chain semantics mid-run — the same
+    /// config-isolation principle as `-c rebase.updateRefs=false` (REBASE_AUDIT.md F4). Note
+    /// it does *not* imply the merge backend (`builtin/rebase.c:1597` only implies for
+    /// `== 1`); `--empty` is what does.
+    ///
+    /// Version floor: `--empty` arrived in git 2.26 (absent in v2.25.0, present in v2.26.0).
+    /// `--rebase-merges` has been negatable since it was added, and the
+    /// `rebase.rebaseMerges` config that `--no-rebase-merges` guards against only exists
+    /// from git 2.41 — which is also where an explicit `--no-rebase-merges` gained the
+    /// power to override it. So the flag is effective exactly where the hazard exists, and
+    /// harmless before it. The effective floor is **git 2.26**.
     fn chain_rebase_command(
         &self,
         parent: &str,
@@ -484,7 +514,8 @@ impl GitChain {
             .arg("-c")
             .arg("rebase.updateRefs=false")
             .arg("rebase")
-            .arg("--keep-empty");
+            .arg("--empty=drop")
+            .arg("--no-rebase-merges");
 
         if self.fork_point_matches(parent, fork_point, branch) {
             command
@@ -495,7 +526,8 @@ impl GitChain {
                 .arg(branch);
 
             let printable = format!(
-                "git -c rebase.updateRefs=false rebase --keep-empty --fork-point --onto {} {} {}",
+                "git -c rebase.updateRefs=false rebase --empty=drop --no-rebase-merges \
+                 --fork-point --onto {} {} {}",
                 parent, parent, branch
             );
             return (printable, command);
@@ -508,7 +540,7 @@ impl GitChain {
             .arg(branch);
 
         let printable = format!(
-            "git -c rebase.updateRefs=false rebase --keep-empty --onto {} {} {}",
+            "git -c rebase.updateRefs=false rebase --empty=drop --no-rebase-merges --onto {} {} {}",
             parent, fork_point, branch
         );
         (printable, command)
