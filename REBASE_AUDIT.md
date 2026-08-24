@@ -297,17 +297,25 @@ characterization tests:**
    (`#[serde(default)]` — old state files still parse) and cleanup deletes
    only those; user/manual backups survive.
 
-**P1 — recovery & correctness:**
-5. H3: `rebase --quit` + state-path in errors + version check. *(Still open;
-   its characterization test still passes-as-defect.)*
-6. H4: ~~reorder abort's delete-state before final checkout~~ — done with H2
-   in `e057fda`.
-7. F1: fork-point-as-negative-ref invocation (restore patch-id skipping),
-   guarded by the pre-computed SHA.
-8. M2: abort resets the working tree it owns.
-9. M4: worktree pre-flight in `preliminary_checks` + fixed advice (also
-   closes release-audit MEDIUM 1).
-10. M1: `--step` refuses while state exists.
+**P1 — recovery & correctness: ✅ ALL FIXED (2026-08-24):**
+5. H3 — fixed in `8626e3d`: `rebase --quit` (works on corrupt state, touches
+   no branch), parse errors name the state file path, version mismatch
+   diagnosed, in-progress guard distinguishes corrupt state; successful runs
+   survive a failed final switch-back (tail-checkout warnings).
+6. H4 — done with H2 in `e057fda`.
+7. F1 — fixed in `a0d03b5`: per-branch guarded invocation — dedup form
+   `--fork-point --onto P P <branch>` when git's fork-point agrees with the
+   frozen SHA, frozen-SHA form otherwise (fails closed; criss-cross falls
+   back byte-identically). Reviewed and approved by the semantics audit;
+   the intended behavior delta (applied-then-reverted patches now dropped,
+   as in plain git rebase) is CHANGELOG'd.
+8. M2 — fixed in `f08be98`: abort hard-resets the working tree of the branch
+   it restored; leaves as-is (with a note) trees it does not own; untracked
+   files untouched.
+9. M4 — fixed in `4e1febb`: worktree pre-flight before any state is written
+   (also closes release-audit MEDIUM 1); mid-pause worktree grabs get the
+   C1 treatment (Failed + state kept + advice).
+10. M1 — fixed in `4e1febb`: `--step` refuses while a chain rebase is paused.
 
 **P2 — hygiene & honesty:**
 11. F3: `--keep-empty` → `--empty=drop`; F4: explicit `--no-rebase-merges`.
