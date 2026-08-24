@@ -13,14 +13,16 @@
 //! assertions have to flip so the test becomes a regression guard for the
 //! fixed behavior.
 //!
-//! Coverage (status: **C1 and H1 are FIXED**, their tests now guard the fixes;
-//! H2 and H3 still characterize their defects):
+//! Coverage (status: **C1, H1 and H2 are FIXED**, their tests now guard the
+//! fixes; H3 still characterizes its defect):
 //!
 //! | Test                                                    | Audit finding | Status  |
 //! |---------------------------------------------------------|---------------|---------|
 //! | `audit_c1_rebase_failure_keeps_state_for_recovery`       | C1 · CRITICAL | FIXED   |
 //! | `audit_c1_continue_retries_the_failed_branch`            | C1 · CRITICAL | FIXED   |
-//! | `audit_h2_abort_discards_work_on_untouched_branch`       | H2 · HIGH     | defect  |
+//! | `audit_h2_abort_keeps_work_on_untouched_branch`          | H2 · HIGH     | FIXED   |
+//! | `audit_h2_abort_never_deletes_a_branch_on_zero_oid`      | H2 · HIGH     | FIXED   |
+//! | `audit_h4_abort_deletes_state_before_final_checkout`     | H4 · HIGH     | FIXED   |
 //! | `audit_h3_corrupt_state_wedges_all_recovery_commands`    | H3 · HIGH     | defect  |
 //! | `audit_h1_cleanup_backups_keeps_user_created_backups`    | H1 · HIGH     | FIXED   |
 
@@ -47,6 +49,20 @@ fn rev_parse(path_to_repo: &Path, revision: &str) -> Option<String> {
     }
 
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The message of a branch's most recent reflog entry (`git reflog -1 --format=%gs`).
+///
+/// Note that git writes a reflog entry only when `update-ref` actually changes the ref;
+/// restoring a branch to the value it already holds is a no-op and leaves the reflog
+/// untouched.
+fn last_reflog_message(path_to_repo: &Path, branch_name: &str) -> String {
+    let output = run_git_command(
+        path_to_repo,
+        vec!["reflog", "-1", "--format=%gs", branch_name],
+    );
+
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// True when `ancestor` is an ancestor of `descendant` (`git merge-base --is-ancestor`).
@@ -312,6 +328,9 @@ fn audit_c1_rebase_failure_keeps_state_for_recovery() {
 
     let branch_1_restored = rev_parse(&path_to_repo, "some_branch_1").unwrap();
     let branch_2_restored = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+    // some_branch_1 really was rewritten by the failed run, so restoring it moves the
+    // ref and git records the reflog message the abort passes to `update-ref -m`.
+    let branch_1_reflog = last_reflog_message(&path_to_repo, "some_branch_1");
 
     println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
     println!("ABORT OUTPUT: {}", abort_text);
@@ -328,6 +347,11 @@ fn audit_c1_rebase_failure_keeps_state_for_recovery() {
         branch_2_original == branch_2_restored
     );
     println!("STATE FILE EXISTS AFTER ABORT: {}", state_file.exists());
+    println!("some_branch_1 last reflog message: {}", branch_1_reflog);
+    println!(
+        "reflog names the abort: {}",
+        branch_1_reflog.contains("chain rebase (abort)")
+    );
     println!("======");
 
     // Uncomment to stop test execution and debug the recovery path
@@ -360,6 +384,18 @@ fn audit_c1_rebase_failure_keeps_state_for_recovery() {
         !state_file.exists(),
         "the state file should be consumed by a successful --abort, but {} still exists",
         state_file.display()
+    );
+    // The restore is attributed in the reflog, so the rewind is traceable afterwards
+    // (REBASE_AUDIT L3 — `update-ref` used to run without `-m`).
+    assert!(
+        branch_1_reflog.contains("chain rebase (abort)"),
+        "some_branch_1's newest reflog entry should name the chain rebase abort, got: {}",
+        branch_1_reflog
+    );
+    assert!(
+        branch_1_reflog.contains("some_branch_1"),
+        "the reflog message should name the restored branch, got: {}",
+        branch_1_reflog
     );
 
     teardown_git_repo(repo_name);
@@ -564,28 +600,24 @@ fn audit_c1_continue_retries_the_failed_branch() {
 }
 
 // ---------------------------------------------------------------------------
-// H2 · HIGH — `--abort` is an unverified clobber that always reports success
+// H2 · HIGH (FIXED) — `--abort` checks each branch and reports honestly
 // ---------------------------------------------------------------------------
 
-/// Documents audit finding **H2**: `rebase_abort` replays every entry of
-/// `original_refs` through `git update-ref` (`operations.rs:1276-1300`) with no
-/// old-value argument, no backup, and no check of what the branch points at
-/// now. Per-branch failures only `eprintln!`, and step 7 unconditionally prints
-/// "All branches restored to their original state."
+/// Guards the fix for audit finding **H2**: `rebase_abort` no longer replays every
+/// entry of `original_refs` blindly. It walks the branches in chain order, and for a
+/// branch still marked `Pending` — one this rebase never reached — it compares the
+/// current tip against the recorded original and leaves it alone if it has moved,
+/// because the only thing that could have moved it is the user.
 ///
-/// Here the chain rebase stops at a conflict on `some_branch_1` and never
-/// reaches `some_branch_3`. The user aborts the git-level rebase, commits real
-/// work on `some_branch_3`, and then aborts the chain rebase — which silently
-/// throws that commit away while reporting success.
+/// Here the chain rebase stops at a conflict on `some_branch_1` and never reaches
+/// `some_branch_3`. The user aborts the git-level rebase, commits real work on
+/// `some_branch_3`, and then aborts the chain rebase. That commit must survive, and
+/// the summary must not claim every branch was restored.
 ///
-/// AFTER THE FIX (compare-and-swap or refuse/warn on externally moved branches):
-///   - `branch_3_after_abort` must equal `branch_3_with_new_work`, not
-///     `branch_3_original`
-///   - `object_exists(... "some_branch_3:untouched_work.txt")` must flip to `true`
-///   - the unconditional "All branches restored" claim must become conditional
+/// This test fails if abort ever goes back to clobbering branches it did not rewrite.
 #[test]
-fn audit_h2_abort_discards_work_on_untouched_branch() {
-    let repo_name = "audit_h2_abort_discards_untouched_work";
+fn audit_h2_abort_keeps_work_on_untouched_branch() {
+    let repo_name = "audit_h2_abort_keeps_untouched_work";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
 
@@ -735,6 +767,19 @@ fn audit_h2_abort_discards_work_on_untouched_branch() {
         "untouched_work.txt reachable from some_branch_3 AFTER abort: {}",
         work_present_after_abort
     );
+    println!(
+        "output claims every branch was restored: {}",
+        abort_text.contains("All branches restored")
+    );
+    println!(
+        "output warns that some_branch_3 was left as-is: {}",
+        abort_text.contains("Leaving some_branch_3 as-is")
+    );
+    println!(
+        "output reports restoring some_branch_1: {}",
+        abort_text.contains("Restored some_branch_1")
+    );
+    println!("EXPECTED (H2 fixed): the untouched branch keeps its commit");
     println!("======");
 
     // Uncomment to stop test execution and debug this test case
@@ -749,31 +794,40 @@ fn audit_h2_abort_discards_work_on_untouched_branch() {
         abort_text
     );
 
-    // DEFECT: success is claimed unconditionally.
+    // The report is honest: it cannot claim everything was restored, because
+    // some_branch_3 deliberately was not.
     assert!(
-        abort_text.contains("All branches restored"),
-        "abort should claim every branch was restored, got: {}",
+        !abort_text.contains("All branches restored"),
+        "abort must not claim every branch was restored when one was left as-is, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("Leaving some_branch_3 as-is"),
+        "abort should warn that some_branch_3 was left alone, got: {}",
         abort_text
     );
 
-    // DEFECT: a branch the rebase never touched was clobbered.
+    // The fix: a branch the rebase never touched keeps the work committed on it.
     assert_eq!(
-        branch_3_after_abort, branch_3_original,
-        "DEFECT H2 no longer reproduces: some_branch_3 was expected to be clobbered \
-         back to its pre-rebase position {}, but it is at {}. If the fix landed, \
-         invert this assertion (see AFTER THE FIX above).",
-        branch_3_original, branch_3_after_abort
+        branch_3_after_abort, branch_3_with_new_work,
+        "some_branch_3 should still carry the commit made during the pause ({}), got {}",
+        branch_3_with_new_work, branch_3_after_abort
     );
     assert_ne!(
-        branch_3_after_abort, branch_3_with_new_work,
-        "DEFECT H2 no longer reproduces: the commit made during the pause survived \
-         at {}. If the fix landed, invert this assertion.",
-        branch_3_with_new_work
+        branch_3_after_abort, branch_3_original,
+        "some_branch_3 must not be rewound to its pre-rebase position {}",
+        branch_3_original
     );
     assert!(
-        !work_present_after_abort,
-        "DEFECT H2 no longer reproduces: untouched_work.txt is still reachable from \
-         some_branch_3 after the abort. If the fix landed, invert this assertion."
+        work_present_after_abort,
+        "untouched_work.txt should still be reachable from some_branch_3 after the abort"
+    );
+
+    // The branch the rebase *did* manage is still restored.
+    assert!(
+        abort_text.contains("Restored some_branch_1"),
+        "abort should still restore the branch the rebase was working on, got: {}",
+        abort_text
     );
 
     // The state file is gone, so the discarded commit cannot be recovered
@@ -784,6 +838,371 @@ fn audit_h2_abort_discards_work_on_untouched_branch() {
         "the state file should be deleted by a successful abort"
     );
 
+    teardown_git_repo(repo_name);
+}
+
+/// Guards the data-loss half of **H2**: an all-zero OID in `original_refs` must never
+/// reach `git update-ref`.
+///
+/// `git update-ref <ref> 0000…` is git's *delete-ref* syntax. Before the fix, a zeroed
+/// entry made the abort print "Restored branch2 to 0000000" while deleting the branch it
+/// claimed to restore — the exact opposite of what abort exists to do. `rebase_abort` now
+/// rejects any recorded original that is not a usable object id, names the branch, and
+/// leaves it alone.
+///
+/// The state file is hand-written (as in the H3 test) because git-chain never produces a
+/// zeroed entry itself; the point is that a corrupted or truncated one cannot destroy work.
+#[test]
+fn audit_h2_abort_never_deletes_a_branch_on_zero_oid() {
+    let repo_name = "audit_h2_abort_zero_oid";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "commit on some_branch_2");
+    };
+
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    let master_oid = rev_parse(&path_to_repo, "master").unwrap();
+    // The OID the crafted state will record as some_branch_1's original, so restoring it
+    // is a real ref move and proves the healthy branches are still handled normally.
+    let branch_1_target = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    checkout_branch(&repo, "some_branch_1");
+    create_new_file(&path_to_repo, "file_1_extra.txt", "more contents");
+    commit_all(&repo, "second commit on some_branch_1");
+
+    let branch_1_before_abort = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_before_abort = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    // Run the abort from master so the final checkout of some_branch_1 is a real one.
+    checkout_branch(&repo, "master");
+
+    // A schema-complete state file whose only anomaly is the zeroed original for
+    // some_branch_2. Both branches are marked Completed so both are restore candidates.
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    let zeroed_state = format!(
+        r#"{{
+  "version": 1,
+  "chain_name": "chain_name",
+  "original_branch": "some_branch_1",
+  "root_branch": "master",
+  "options": {{
+    "step_rebase": false,
+    "ignore_root": false,
+    "squashed_merge_handling": "reset"
+  }},
+  "original_refs": {{
+    "some_branch_1": "{}",
+    "some_branch_2": "0000000000000000000000000000000000000000"
+  }},
+  "merge_bases": ["{}", "{}"],
+  "branches": [
+    {{ "name": "some_branch_1", "parent": "master", "status": "completed" }},
+    {{ "name": "some_branch_2", "parent": "some_branch_1", "status": "completed" }}
+  ],
+  "current_index": 1,
+  "completed_count": 2,
+  "total_count": 2
+}}
+"#,
+        branch_1_target, master_oid, branch_1_target
+    );
+    std::fs::write(&state_file, zeroed_state).unwrap();
+
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+
+    let branch_2_after = rev_parse(&path_to_repo, "some_branch_2");
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1");
+
+    println!("=== H2/zero-OID DIAGNOSTICS ===");
+    println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!(
+        "some_branch_2 before abort: {} / after abort: {:?}",
+        branch_2_before_abort, branch_2_after
+    );
+    println!("some_branch_2 still resolves: {}", branch_2_after.is_some());
+    println!(
+        "some_branch_1: before={} after={:?} (target was {})",
+        branch_1_before_abort, branch_1_after, branch_1_target
+    );
+    println!(
+        "output rejects the zeroed id: {}",
+        abort_text.contains("not a usable object id")
+    );
+    println!(
+        "output reports some_branch_2 as left as-is: {}",
+        abort_text.contains("Left as-is: some_branch_2")
+    );
+    println!(
+        "output claims every branch was restored: {}",
+        abort_text.contains("All branches restored")
+    );
+    println!("EXPECTED: some_branch_2 survives untouched; some_branch_1 is restored");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: zero-OID abort");
+    // assert!(false, "abort output: {}", abort_text);
+    // assert!(false, "branch_2 before={} after={:?}", branch_2_before_abort, branch_2_after);
+
+    assert!(
+        abort_output.status.success(),
+        "abort should succeed while refusing the unusable entry, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("not a usable object id"),
+        "abort should reject the zeroed original commit, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("some_branch_2"),
+        "the rejection should name the branch it refused to restore, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("Left as-is: some_branch_2"),
+        "the summary should report some_branch_2 as left as-is, got: {}",
+        abort_text
+    );
+    assert!(
+        !abort_text.contains("All branches restored"),
+        "abort must not claim every branch was restored, got: {}",
+        abort_text
+    );
+
+    // The invariant: abort never deletes a branch.
+    assert!(
+        branch_2_after.is_some(),
+        "some_branch_2 must still exist after the abort, but it no longer resolves"
+    );
+    assert_eq!(
+        branch_2_after.as_deref(),
+        Some(branch_2_before_abort.as_str()),
+        "some_branch_2 should be untouched at {}, got {:?}",
+        branch_2_before_abort,
+        branch_2_after
+    );
+
+    // The healthy entry is still restored normally.
+    assert!(
+        abort_text.contains("Restored some_branch_1"),
+        "abort should still restore the branch with a usable original, got: {}",
+        abort_text
+    );
+    assert_eq!(
+        branch_1_after.as_deref(),
+        Some(branch_1_target.as_str()),
+        "some_branch_1 should be restored to {} (it was at {} before the abort), got {:?}",
+        branch_1_target,
+        branch_1_before_abort,
+        branch_1_after
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
+// H4 · HIGH (FIXED) — `--abort` deletes state BEFORE its final checkout
+// ---------------------------------------------------------------------------
+
+/// Guards the fix for audit finding **H4**: `rebase_abort` used to checkout the
+/// original branch before deleting the state, so a checkout failure left the state
+/// behind. Every retry then re-ran the whole restore sweep and failed the same way.
+///
+/// Here the original branch is claimed by a linked worktree while the chain rebase is
+/// paused on a conflict, so the final checkout cannot succeed. The abort itself is
+/// still complete: the refs are restored and the state is gone, and the checkout
+/// failure is reported as a warning rather than failing the command.
+#[test]
+fn audit_h4_abort_deletes_state_before_final_checkout() {
+    let repo_name = "audit_h4_abort_state_before_checkout";
+    let worktree_dir = generate_path_to_repo(format!("{}_worktree", repo_name));
+    std::fs::remove_dir_all(&worktree_dir).ok();
+
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // feature_1 rebases cleanly...
+    {
+        create_branch(&repo, "feature_1");
+        checkout_branch(&repo, "feature_1");
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on feature_1");
+    };
+
+    // ...while feature_2 touches the file master is about to change, so the chain
+    // rebase pauses on feature_2 with feature_1 already rewritten.
+    {
+        create_branch(&repo, "feature_2");
+        checkout_branch(&repo, "feature_2");
+        create_new_file(&path_to_repo, "shared.txt", "feature 2 version");
+        commit_all(&repo, "commit on feature_2");
+    };
+
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "feature_1", "feature_2"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "shared.txt", "master version");
+        commit_all(&repo, "conflicting commit on master");
+    };
+
+    // Starting from feature_1 makes it the recorded original_branch.
+    checkout_branch(&repo, "feature_1");
+    let feature_1_original = rev_parse(&path_to_repo, "feature_1").unwrap();
+    let feature_2_original = rev_parse(&path_to_repo, "feature_2").unwrap();
+
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_text = combined_output(&rebase_output);
+
+    let feature_1_rebased = rev_parse(&path_to_repo, "feature_1").unwrap();
+
+    println!("=== H4 DIAGNOSTICS: the paused rebase ===");
+    println!("REBASE EXIT SUCCESS: {}", rebase_output.status.success());
+    println!("REBASE OUTPUT: {}", rebase_text);
+    println!("STATE FILE EXISTS: {}", state_file.exists());
+    println!(
+        "feature_1 was rewritten before the pause: {}",
+        feature_1_rebased != feature_1_original
+    );
+    println!("======");
+
+    assert!(
+        !rebase_output.status.success(),
+        "the rebase should stop on the conflict in feature_2, got: {}",
+        rebase_text
+    );
+    assert!(
+        state_file.exists(),
+        "the paused rebase should have left a state file at {}",
+        state_file.display()
+    );
+    assert_ne!(
+        feature_1_original, feature_1_rebased,
+        "feature_1 should have been rewritten before the pause, but is still at {}",
+        feature_1_original
+    );
+
+    // Claim the original branch in a linked worktree. The main worktree is mid-rebase
+    // with a detached HEAD, so feature_1 is free to be taken.
+    let worktree_output = run_git_command(
+        &path_to_repo,
+        vec![
+            "worktree",
+            "add",
+            &format!("../{}_worktree", repo_name),
+            "feature_1",
+        ],
+    );
+    assert!(
+        worktree_output.status.success(),
+        "git worktree add should succeed but got: {}",
+        String::from_utf8_lossy(&worktree_output.stderr)
+    );
+
+    let abort_output = run_test_bin(&path_to_repo, vec!["rebase", "--abort"]);
+    let abort_text = combined_output(&abort_output);
+
+    let feature_1_restored = rev_parse(&path_to_repo, "feature_1").unwrap();
+    let feature_2_restored = rev_parse(&path_to_repo, "feature_2").unwrap();
+
+    println!("=== H4 DIAGNOSTICS: abort with the original branch worktree-held ===");
+    println!("ABORT EXIT SUCCESS: {}", abort_output.status.success());
+    println!("ABORT OUTPUT: {}", abort_text);
+    println!("STATE FILE EXISTS AFTER ABORT: {}", state_file.exists());
+    println!(
+        "feature_1 restored: {} ({} -> {})",
+        feature_1_restored == feature_1_original,
+        feature_1_rebased,
+        feature_1_restored
+    );
+    println!(
+        "feature_2 restored: {}",
+        feature_2_restored == feature_2_original
+    );
+    println!(
+        "checkout failure reported as a warning: {}",
+        abort_text.contains("Could not switch back to")
+    );
+    println!("EXPECTED (H4 fixed): abort completes, state is gone, checkout is a warning");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: H4 abort with worktree-held original branch");
+    // assert!(false, "abort output: {}", abort_text);
+    // assert!(false, "state exists: {}", state_file.exists());
+
+    assert!(
+        abort_output.status.success(),
+        "abort should succeed even when the final checkout cannot run, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("Could not switch back to"),
+        "the failed checkout should be reported as a warning, got: {}",
+        abort_text
+    );
+    assert!(
+        abort_text.contains("checked out in another worktree"),
+        "the warning should explain why the checkout failed, got: {}",
+        abort_text
+    );
+    // The point of the reorder: the abort is finished, so the state is gone and no
+    // retry is needed.
+    assert!(
+        !state_file.exists(),
+        "the state should be deleted before the final checkout, but {} still exists",
+        state_file.display()
+    );
+    assert_eq!(
+        feature_1_restored, feature_1_original,
+        "feature_1 should be restored to {}, got {}",
+        feature_1_original, feature_1_restored
+    );
+    assert_eq!(
+        feature_2_restored, feature_2_original,
+        "feature_2 should be restored to {}, got {}",
+        feature_2_original, feature_2_restored
+    );
+
+    std::fs::remove_dir_all(&worktree_dir).ok();
     teardown_git_repo(repo_name);
 }
 

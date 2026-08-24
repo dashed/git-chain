@@ -1369,16 +1369,81 @@ impl GitChain {
         // 3. Load state
         let state = read_state(&self.repo)?;
 
-        // 4. Restore all branches from original_refs
+        // 4. Restore branches in chain order — iterating `original_refs` (a HashMap)
+        //    would report them in a different order on every run.
         println!(
             "Restoring branches for chain {}...",
             state.chain_name.bold()
         );
 
-        for (branch_name, original_oid) in &state.original_refs {
+        let mut restored = 0usize;
+        let mut already_in_place = 0usize;
+        let mut left_as_is: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+
+        for branch in &state.branches {
+            let branch_name = &branch.name;
+
+            let original_oid = match state.original_refs.get(branch_name) {
+                Some(oid) => oid,
+                None => {
+                    eprintln!(
+                        "  ⚠️  No original commit recorded for {} — leaving it as-is",
+                        branch_name.bold()
+                    );
+                    left_as_is.push(branch_name.clone());
+                    continue;
+                }
+            };
+
+            if !Self::is_restorable_oid(original_oid) {
+                eprintln!(
+                    "  ⚠️  Not restoring {}: the recorded original commit {:?} is not a usable \
+                     object id",
+                    branch_name.bold(),
+                    original_oid
+                );
+                left_as_is.push(branch_name.clone());
+                continue;
+            }
+
+            let current_oid = self.get_branch_commit_oid(branch_name).ok();
+
+            // A branch this rebase never reached is not ours to rewind. If it has moved
+            // since the rebase started, the only thing that could have moved it is the
+            // user, and abort must not throw that work away.
+            if branch.status == BranchRebaseStatus::Pending {
+                match current_oid.as_deref() {
+                    Some(current) if current == original_oid => {
+                        already_in_place += 1;
+                        continue;
+                    }
+                    Some(_) => {
+                        println!(
+                            "  ⚠️  Leaving {} as-is: this chain rebase never touched it, but it \
+                             has moved since the rebase started",
+                            branch_name.bold()
+                        );
+                        left_as_is.push(branch_name.clone());
+                        continue;
+                    }
+                    None => {
+                        println!(
+                            "  ⚠️  Leaving {} as-is: this chain rebase never touched it, and it \
+                             no longer exists",
+                            branch_name.bold()
+                        );
+                        left_as_is.push(branch_name.clone());
+                        continue;
+                    }
+                }
+            }
+
             let short_oid = &original_oid[..7.min(original_oid.len())];
             let output = Command::new("git")
                 .arg("update-ref")
+                .arg("-m")
+                .arg(format!("chain rebase (abort): restoring {}", branch_name))
                 .arg(format!("refs/heads/{}", branch_name))
                 .arg(original_oid)
                 .output();
@@ -1386,6 +1451,7 @@ impl GitChain {
             match output {
                 Ok(result) if result.status.success() => {
                     println!("  Restored {} to {}", branch_name.bold(), short_oid);
+                    restored += 1;
                 }
                 Ok(result) => {
                     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -1394,29 +1460,82 @@ impl GitChain {
                         branch_name.bold(),
                         stderr.trim()
                     );
+                    failed.push(branch_name.clone());
                 }
                 Err(e) => {
                     eprintln!("  ⚠️  Failed to restore {}: {}", branch_name.bold(), e);
+                    failed.push(branch_name.clone());
                 }
             }
         }
 
-        // 5. Checkout original branch
-        println!();
-        println!("Switching back to branch: {}", state.original_branch.bold());
-        self.checkout_branch(&state.original_branch)?;
+        // 5. A failed restore leaves the chain half-way. Keep the state so the user can
+        //    fix the cause and run --abort again, and fail loudly rather than claiming
+        //    everything was restored.
+        if !failed.is_empty() {
+            return Err(Error::from_str(&format!(
+                "🛑 Could not restore {} of chain {}: {}.\n\
+                 The chain rebase state has been kept — resolve the problem and run \
+                 '{} rebase --abort' again.",
+                if failed.len() == 1 {
+                    "branch"
+                } else {
+                    "branches"
+                },
+                state.chain_name,
+                failed.join(", "),
+                self.executable_name
+            )));
+        }
 
-        // 6. Delete state file
+        // 6. Delete the state before the final checkout. The abort itself is done; a
+        //    checkout failure (the original branch held by another worktree, say) must
+        //    not leave the state behind for a retry that would redo the whole sweep.
         delete_state(&self.repo)?;
 
-        // 7. Print summary
+        // 7. Return to the original branch.
         println!();
-        println!(
-            "🔄 Aborted chain rebase for chain {}. All branches restored to their original state.",
-            state.chain_name.bold()
-        );
+        println!("Switching back to branch: {}", state.original_branch.bold());
+        if let Err(e) = self.checkout_branch(&state.original_branch) {
+            println!(
+                "  ⚠️  Could not switch back to {}: {}",
+                state.original_branch.bold(),
+                e
+            );
+        }
+
+        // 8. Report what actually happened.
+        println!();
+        if left_as_is.is_empty() {
+            println!(
+                "🔄 Aborted chain rebase for chain {}. All branches restored to their original state.",
+                state.chain_name.bold()
+            );
+        } else {
+            println!(
+                "🔄 Aborted chain rebase for chain {}.",
+                state.chain_name.bold()
+            );
+            if restored > 0 {
+                println!("   Restored: {}", restored);
+            }
+            if already_in_place > 0 {
+                println!("   Already at their original state: {}", already_in_place);
+            }
+            println!("   Left as-is: {}", left_as_is.join(", "));
+        }
 
         Ok(())
+    }
+
+    /// True when `oid` is a full object id git will accept as a ref *value*.
+    ///
+    /// An all-zero id is git's delete-ref syntax (`git update-ref <ref> 0000…`), so
+    /// restoring one would delete the very branch the abort exists to protect.
+    fn is_restorable_oid(oid: &str) -> bool {
+        (oid.len() == 40 || oid.len() == 64)
+            && oid.chars().all(|c| c.is_ascii_hexdigit())
+            && oid.chars().any(|c| c != '0')
     }
 
     pub fn backup(&self, chain_name: &str) -> Result<(), Error> {
