@@ -1,27 +1,30 @@
 //! Characterization tests for the `git rebase` invocation that `git chain rebase` builds.
 //!
-//! # SOME OF THESE TESTS ASSERT DEFECTIVE BEHAVIOR ON PURPOSE
+//! # THESE TESTS NOW GUARD FIXED BEHAVIOR
 //!
 //! Each test here documents a HIGH severity finding from `REBASE_AUDIT.md` (repo root).
-//! A test that is still *characterizing* pins down what git-chain does **today**, which is
-//! wrong, so it PASSES while the bug exists and FAILS the moment it is fixed.
+//! They began as *characterization* tests, pinning down what git-chain did while the bugs
+//! were live; each was inverted when its fix landed, so it now fails if the behavior
+//! regresses.
 //!
-//! **When a fix lands, the corresponding test MUST BE INVERTED**, not deleted. The inverted
-//! assertions are spelled out inline next to each defect assertion, marked `AFTER THE FIX:`.
+//! Current status: **F1 and F2 are both FIXED**, and both tests guard their fixes.
+//! `audit_f1_falls_back_to_the_frozen_fork_point` additionally guards the safety valve on
+//! the F1 fix: when git's fork-point calculation is unavailable, the pre-computed SHA is
+//! used and the replay window stays exactly what it always was.
 //!
-//! Current status: **F1 still characterizes the defect. F2 is FIXED and its test now guards
-//! the fix** — it fails if the isolation regresses.
+//! ## F1 — git's patch-id skipping is restored (FIXED)
 //!
-//! ## F1 — merge-base-as-upstream disables git's patch-id skipping
+//! git-chain used to run `git rebase --keep-empty --onto <parent> <fork_point_sha> <branch>`.
+//! Because the fork point is always an ancestor of `<branch>`, the left side of the `A...B`
+//! symmetric difference that `sequencer_make_script` walks was empty, so `revs.cherry_mark`
+//! could never mark a commit PATCHSAME. git itself never passes the fork point as
+//! `<upstream>`: it layers it on as a negative ref (`^restrict_revision`) on top of the real
+//! upstream (`builtin/rebase.c:296-311`).
 //!
-//! `src/git_chain/operations.rs:253-266` runs
-//! `git rebase --keep-empty --onto <parent> <fork_point_sha> <branch>`. Because the fork point
-//! is always an ancestor of `<branch>`, the left side of the `A...B` symmetric difference that
-//! `sequencer_make_script` walks is empty, so `revs.cherry_mark` can never mark a commit
-//! PATCHSAME. git itself never passes the fork point as `<upstream>`: it layers it on as a
-//! negative ref (`^restrict_revision`) on top of the real upstream (`builtin/rebase.c:296-311`).
-//! The result is that git-chain replays commits whose patch is already on the parent branch,
-//! which conflicts whenever the parent has since touched the same lines.
+//! The invocation is now built by `chain_rebase_command`, which passes the parent *ref* as
+//! `<upstream>` and adds `--fork-point` — restoring the skip while replaying the same window
+//! — whenever git's fork-point calculation agrees with the SHA pre-computed before any branch
+//! moved. When it disagrees or fails, the frozen SHA form is used unchanged.
 //!
 //! ## F2 — `rebase.updateRefs` is neutralised (FIXED)
 //!
@@ -139,15 +142,15 @@ fn build_f1_scenario(repo: &Repository, path_to_repo: &Path) {
     commit_all(repo, "master advances");
 }
 
-/// F1: `git chain rebase` conflicts on input that plain `git rebase` replays cleanly.
+/// F1 (FIXED): `git chain rebase` skips already-applied commits, exactly as plain git does.
 ///
 /// Both halves of this test build a byte-identical scenario and rebase `b1` with the exact
-/// command git-chain uses. The only thing that differs is the `<upstream>` argument of the `b2`
-/// rebase: git-chain passes the fork-point SHA, git's own form passes the parent branch ref.
-/// That single difference decides whether the already-applied commit is silently skipped or
-/// blows up as a merge conflict.
+/// command git-chain uses. The `<upstream>` argument of the `b2` rebase is what decides whether
+/// the already-applied commit is silently skipped or blows up as a merge conflict: git-chain
+/// used to pass the fork-point SHA, and now passes the parent branch ref with `--fork-point`,
+/// which is git's own form. Half B remains the reference both halves are compared against.
 #[test]
-fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
+fn audit_f1_chain_rebase_skips_already_applied_commits() {
     // ---------------------------------------------------------------------------------
     // Half A — git-chain's construction: expected (defectively) to conflict.
     // ---------------------------------------------------------------------------------
@@ -245,8 +248,14 @@ fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
         chain_stderr.contains("Unable to completely rebase")
     );
     println!(
-        "stdout shows the merge-base SHA as <upstream>: {}",
-        chain_stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --onto b1 ")
+        "stdout shows the dedup form (parent ref as <upstream>): {}",
+        chain_stdout.contains(
+            "git -c rebase.updateRefs=false rebase --keep-empty --fork-point --onto b1 b1 b2"
+        )
+    );
+    println!(
+        "stderr reports skipping the already-applied commit: {}",
+        chain_stderr.contains("skipped previously applied commit")
     );
     println!("git status --porcelain: {}", chain_status_porcelain);
     println!(
@@ -254,7 +263,7 @@ fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
         chain_status_porcelain.contains("UU ")
     );
     println!(".git/rebase-merge exists: {}", chain_rebase_dir_exists);
-    println!("EXPECTED (defect F1): chain rebase fails and leaves b2 conflicted mid-rebase");
+    println!("EXPECTED (F1 fixed): chain rebase succeeds, skipping the duplicate commit");
 
     // Uncomment to stop test execution and debug half A
     // assert!(false, "DEBUG STOP: F1 half A (git-chain construction)");
@@ -263,46 +272,75 @@ fn audit_f1_chain_rebase_conflicts_where_plain_git_succeeds() {
     // assert!(false, "status code: {:?}", chain_output.status.code());
     // assert!(false, "porcelain: {}", chain_status_porcelain);
 
-    // AFTER THE FIX: assert!(chain_output.status.success(), ...)
     assert!(
-        !chain_output.status.success(),
-        "DEFECT F1 no longer reproduces: git chain rebase succeeded. If the fix landed, invert \
-         this test.\nstdout: {}\nstderr: {}",
+        chain_output.status.success(),
+        "git chain rebase should succeed now that the duplicate commit is skipped.\nstdout: \
+         {}\nstderr: {}",
         chain_stdout,
         chain_stderr
     );
-    assert_eq!(
-        chain_output.status.code(),
-        Some(1),
-        "git chain rebase should exit 1 on conflict, got {:?}. stderr: {}",
-        chain_output.status.code(),
+    assert!(
+        !chain_stderr.contains("Unable to completely rebase"),
+        "stderr should not report a failed chain rebase but got: {}",
         chain_stderr
     );
+    // The invocation itself: `<upstream>` is the `b1` branch ref, which is what lets git mark
+    // the duplicate PATCHSAME, with `--fork-point` keeping the replay window unchanged.
     assert!(
-        chain_stderr.contains("Unable to completely rebase"),
-        "stderr should report the failed chain rebase but got: {}",
-        chain_stderr
-    );
-    // This is the defective invocation itself, echoed by git-chain: `<upstream>` is a raw SHA
-    // (the fork point) rather than the `b1` branch ref. (The `-c rebase.updateRefs=false`
-    // prefix is the F2 fix; F1 is unaffected by it.)
-    assert!(
-        chain_stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --onto b1 "),
-        "stdout should echo the rebase invocation for b2 but got: {}",
+        chain_stdout.contains(
+            "git -c rebase.updateRefs=false rebase --keep-empty --fork-point --onto b1 b1 b2"
+        ),
+        "stdout should echo the dedup rebase invocation for b2 but got: {}",
         chain_stdout
     );
-    // AFTER THE FIX: assert!(!chain_status_porcelain.contains("UU "), ...)
+    // git's own report that the patch-id match was found and skipped.
     assert!(
-        chain_status_porcelain.contains("UU "),
-        "b2 should be left with an unmerged path after the conflict, got porcelain: {}",
+        chain_stderr.contains("skipped previously applied commit"),
+        "stderr should report skipping the already-applied commit but got: {}",
+        chain_stderr
+    );
+    assert!(
+        chain_stderr.contains("Successfully rebased"),
+        "stderr should report a successful rebase but got: {}",
+        chain_stderr
+    );
+    assert!(
+        !chain_status_porcelain.contains("UU "),
+        "b2 should not be left with an unmerged path, got porcelain: {}",
         chain_status_porcelain
     );
-    // AFTER THE FIX: assert!(!chain_rebase_dir_exists, ...)
     assert!(
-        chain_rebase_dir_exists,
-        "a git rebase should be left in progress (.git/rebase-merge), but the directory is \
-         missing. porcelain: {}",
+        chain_status_porcelain.is_empty(),
+        "the working tree should be clean after the rebase, got porcelain: {}",
         chain_status_porcelain
+    );
+    assert!(
+        !chain_rebase_dir_exists,
+        "no rebase should be left in progress, but .git/rebase-merge exists. porcelain: {}",
+        chain_status_porcelain
+    );
+
+    // The topology matches what plain git produces in half B: b2's own commit replanted on
+    // top of the parent's refined fix.
+    let chain_b2_log = git_stdout(
+        &path_to_chain_repo,
+        vec!["log", "--oneline", "--format=%s", "b2"],
+    );
+    println!("chain b2 log:\n{}", chain_b2_log);
+    assert!(
+        chain_b2_log.contains("C(b2) modifies L1"),
+        "b2 should still carry its own commit after the rebase, got log:\n{}",
+        chain_b2_log
+    );
+    assert!(
+        chain_b2_log.contains("D(b1) improves L8"),
+        "b2 should be replanted on top of b1's new tip, got log:\n{}",
+        chain_b2_log
+    );
+    assert!(
+        !chain_b2_log.contains("B(b2) fixes L8"),
+        "b2's duplicate of the L8 fix should have been skipped, got log:\n{}",
+        chain_b2_log
     );
 
     // ---------------------------------------------------------------------------------
@@ -627,6 +665,214 @@ fn audit_f2_update_refs_config_does_not_move_backup_branches() {
         backup_b2_after, b2_after,
         "backup-audit_chain/b2 should not have been dragged onto b2's new tip {}",
         b2_after
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// Extract the `git rebase` invocation git-chain echoed for `branch`.
+///
+/// Returns the single line ending in that branch name, so each branch's form can be asserted
+/// independently — a chain rebase echoes one command per branch and they need not agree.
+fn echoed_rebase_command(stdout: &str, branch: &str) -> String {
+    stdout
+        .lines()
+        .find(|line| {
+            line.starts_with("git -c rebase.updateRefs=false rebase") && line.ends_with(branch)
+        })
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The safety valve on the F1 fix: when git's fork-point calculation disagrees with the
+/// pre-computed SHA — or cannot run at all — the frozen SHA form is used unchanged.
+///
+/// `--fork-point` reads the parent's reflog, which can be expired or rewritten. The
+/// pre-computation in `rebase()` does not, and it stays the source of truth: the replayed
+/// window must never change because a reflog happened to be missing.
+///
+/// The scenario rewrites `some_branch_1`'s commit so `some_branch_2`'s recorded base is no
+/// longer reachable from it, then expires every reflog. `merge-base --fork-point
+/// some_branch_1 some_branch_2` then fails outright. It also exercises the *other* side of
+/// the guard in the same run: by the time the chain rebase starts, `master` has a fresh
+/// reflog entry whose fork point does agree, so that branch takes the dedup form.
+#[test]
+fn audit_f1_falls_back_to_the_frozen_fork_point() {
+    let repo_name = "audit_f1_frozen_fallback";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    create_new_file(&path_to_repo, "hello.txt", "hello");
+    first_commit_all(&repo, "A");
+
+    create_branch(&repo, "some_branch_1");
+    checkout_branch(&repo, "some_branch_1");
+    create_new_file(&path_to_repo, "b.txt", "b");
+    commit_all(&repo, "B on some_branch_1");
+
+    create_branch(&repo, "some_branch_2");
+    checkout_branch(&repo, "some_branch_2");
+    create_new_file(&path_to_repo, "c.txt", "c");
+    commit_all(&repo, "C on some_branch_2");
+
+    run_test_bin_expect_ok(
+        &path_to_repo,
+        vec![
+            "setup",
+            "audit_chain",
+            "master",
+            "some_branch_1",
+            "some_branch_2",
+        ],
+    );
+
+    // Rewrite some_branch_1's commit. The tree is unchanged (message-only amend), but the
+    // commit some_branch_2 sits on is no longer reachable from its parent — which is exactly
+    // the situation `--fork-point` exists to resolve, and the reflog is how it resolves it.
+    checkout_branch(&repo, "some_branch_1");
+    let amend_output = run_git_command(
+        &path_to_repo,
+        vec!["commit", "--amend", "-m", "B-prime on some_branch_1"],
+    );
+    assert!(
+        amend_output.status.success(),
+        "amending the commit should succeed, stderr: {}",
+        String::from_utf8_lossy(&amend_output.stderr)
+    );
+
+    // Take the reflog away, so the fork-point calculation has nothing to work with.
+    let expire_output = run_git_command(
+        &path_to_repo,
+        vec!["reflog", "expire", "--expire=all", "--all"],
+    );
+    assert!(
+        expire_output.status.success(),
+        "expiring the reflogs should succeed, stderr: {}",
+        String::from_utf8_lossy(&expire_output.stderr)
+    );
+
+    checkout_branch(&repo, "master");
+    create_new_file(&path_to_repo, "m.txt", "m");
+    commit_all(&repo, "master advances");
+    checkout_branch(&repo, "some_branch_1");
+
+    // Precondition: git really cannot compute a fork point for the child branch here.
+    let fork_point_probe = run_git_command(
+        &path_to_repo,
+        vec![
+            "merge-base",
+            "--fork-point",
+            "some_branch_1",
+            "some_branch_2",
+        ],
+    );
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_stdout = String::from_utf8_lossy(&rebase_output.stdout).to_string();
+    let rebase_stderr = String::from_utf8_lossy(&rebase_output.stderr).to_string();
+
+    let branch_1_command = echoed_rebase_command(&rebase_stdout, "some_branch_1");
+    let branch_2_command = echoed_rebase_command(&rebase_stdout, "some_branch_2");
+
+    let porcelain = git_stdout(&path_to_repo, vec!["status", "--porcelain"]);
+    let branch_2_log = git_stdout(
+        &path_to_repo,
+        vec!["log", "--oneline", "--format=%s", "some_branch_2"],
+    );
+
+    println!("=== F1 FALLBACK DIAGNOSTICS ===");
+    println!(
+        "merge-base --fork-point some_branch_1 some_branch_2 succeeds: {}",
+        fork_point_probe.status.success()
+    );
+    println!("REBASE STDOUT: {}", rebase_stdout);
+    println!("REBASE STDERR: {}", rebase_stderr);
+    println!("EXIT SUCCESS: {}", rebase_output.status.success());
+    println!("some_branch_1 command: {}", branch_1_command);
+    println!("some_branch_2 command: {}", branch_2_command);
+    println!(
+        "some_branch_2 used the frozen form (no --fork-point): {}",
+        !branch_2_command.contains("--fork-point")
+    );
+    println!(
+        "some_branch_1 used the dedup form: {}",
+        branch_1_command.contains("--fork-point")
+    );
+    println!("git status --porcelain: {}", porcelain);
+    println!("some_branch_2 log:\n{}", branch_2_log);
+    println!("EXPECTED: the child falls back to the frozen SHA and the rebase still succeeds");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: F1 frozen fallback");
+    // assert!(false, "stdout: {}", rebase_stdout);
+    // assert!(false, "branch_2 command: {}", branch_2_command);
+
+    assert!(
+        !fork_point_probe.status.success(),
+        "the scenario requires that git cannot compute a fork point for some_branch_2, but it \
+         returned: {}",
+        String::from_utf8_lossy(&fork_point_probe.stdout)
+    );
+    assert!(
+        rebase_output.status.success(),
+        "the chain rebase should still succeed via the frozen SHA.\nstdout: {}\nstderr: {}",
+        rebase_stdout,
+        rebase_stderr
+    );
+
+    // The child branch falls back: the parent ref is the `--onto` target, and the frozen SHA
+    // is `<upstream>` — no `--fork-point` anywhere, because git could not supply one.
+    assert!(
+        !branch_2_command.is_empty(),
+        "git-chain should echo a rebase command for some_branch_2, got stdout: {}",
+        rebase_stdout
+    );
+    assert!(
+        !branch_2_command.contains("--fork-point"),
+        "some_branch_2 should use the frozen form, but its command was: {}",
+        branch_2_command
+    );
+    assert!(
+        branch_2_command.contains("--keep-empty --onto some_branch_1 "),
+        "some_branch_2 should be rebased onto its parent with the frozen SHA as <upstream>, but \
+         its command was: {}",
+        branch_2_command
+    );
+
+    // And the guard is per-branch, not global: master's reflog was rebuilt by the commit
+    // above, so its fork point agrees and that branch takes the dedup form.
+    assert!(
+        branch_1_command.contains("--fork-point --onto master master some_branch_1"),
+        "some_branch_1 should use the dedup form, but its command was: {}",
+        branch_1_command
+    );
+
+    // Topology: the chain is consistent and the duplicate of the amended commit is gone.
+    assert!(
+        porcelain.is_empty(),
+        "the working tree should be clean after the rebase, got porcelain: {}",
+        porcelain
+    );
+    assert!(
+        branch_2_log.contains("C on some_branch_2"),
+        "some_branch_2 should still carry its own commit, got log:\n{}",
+        branch_2_log
+    );
+    assert!(
+        branch_2_log.contains("B-prime on some_branch_1"),
+        "some_branch_2 should be replanted on the rewritten parent commit, got log:\n{}",
+        branch_2_log
+    );
+    assert!(
+        branch_2_log.contains("master advances"),
+        "some_branch_2 should contain master's new commit, got log:\n{}",
+        branch_2_log
+    );
+    assert!(
+        !branch_2_log.contains("B on some_branch_1"),
+        "the superseded copy of the parent's commit should have been dropped, got log:\n{}",
+        branch_2_log
     );
 
     teardown_git_repo(repo_name);

@@ -1678,8 +1678,10 @@ fn rebase_squashed_merge_force_rebase() {
         "should NOT use reset --hard when forcing rebase, got: {}",
         stdout
     );
+    // This repo's reflogs are intact, so the rebase takes the dedup form
+    // (`--fork-point --onto <parent> <parent>`); see REBASE_AUDIT.md F1.
     assert!(
-        stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --onto"),
+        stdout.contains("git -c rebase.updateRefs=false rebase --keep-empty --fork-point --onto"),
         "should perform normal rebase, got: {}",
         stdout
     );
