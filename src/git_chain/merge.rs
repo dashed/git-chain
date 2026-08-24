@@ -573,7 +573,7 @@ impl GitChain {
             .arg("--hard")
             .arg(branch_name)
             .output()
-            .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
         if !output.status.success() {
             return Err(Error::from_str(&format!("Unable to run: {}", command)));

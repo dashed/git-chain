@@ -256,7 +256,7 @@ impl GitChain {
             BranchSearchResult::NotPartOfAnyChain => {
                 return Err(Error::from_str(&format!(
                     "Branch is not part of any chain: {}\nTo initialize a chain for this branch, run {} init <chain_name> <root_branch>",
-                    &branch_name, self.executable_name
+                    branch_name, self.executable_name
                 )));
             }
             BranchSearchResult::Branch(branch) => {

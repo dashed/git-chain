@@ -165,7 +165,7 @@ impl GitChain {
                 println!();
                 println!(
                     "⚠️  Not rebasing branch {} against root branch {}. Skipping.",
-                    &branch.branch_name.bold(),
+                    branch.branch_name.bold(),
                     prev_branch_name.bold()
                 );
                 if !step_rebase {
@@ -190,7 +190,7 @@ impl GitChain {
                         println!();
                         println!(
                             "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
-                            &branch.branch_name.bold(),
+                            branch.branch_name.bold(),
                             prev_branch_name.bold()
                         );
                         if !step_rebase {
@@ -202,7 +202,7 @@ impl GitChain {
                         println!();
                         println!(
                             "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
-                            &branch.branch_name.bold(),
+                            branch.branch_name.bold(),
                             prev_branch_name.bold()
                         );
                         // Fall through to normal rebase below
@@ -211,16 +211,16 @@ impl GitChain {
                         println!();
                         println!(
                             "⚠️  Branch {} is detected to be squashed and merged onto {}.",
-                            &branch.branch_name.bold(),
+                            branch.branch_name.bold(),
                             prev_branch_name.bold()
                         );
 
                         // Create backup before destructive reset
                         branch.backup(self)?;
-                        let backup_name = format!("backup-{}/{}", chain_name, &branch.branch_name);
+                        let backup_name = format!("backup-{}/{}", chain_name, branch.branch_name);
                         println!("📦 Created backup branch: {}", backup_name.bold());
 
-                        let command = format!("git reset --hard {}", &prev_branch_name);
+                        let command = format!("git reset --hard {}", prev_branch_name);
 
                         // git reset --hard <prev_branch_name>
                         let output = Command::new("git")
@@ -228,16 +228,16 @@ impl GitChain {
                             .arg("--hard")
                             .arg(prev_branch_name)
                             .output()
-                            .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
                         if !output.status.success() {
                             let _ = self.checkout_branch(&orig_branch);
-                            return Err(Error::from_str(&format!("Unable to run: {}", &command)));
+                            return Err(Error::from_str(&format!("Unable to run: {}", command)));
                         }
 
                         println!(
                             "Resetting branch {} to {}",
-                            &branch.branch_name.bold(),
+                            branch.branch_name.bold(),
                             prev_branch_name.bold()
                         );
                         println!("{}", command);
@@ -252,7 +252,7 @@ impl GitChain {
 
             let command = format!(
                 "git rebase --keep-empty --onto {} {} {}",
-                &prev_branch_name, common_point, &branch.branch_name
+                prev_branch_name, common_point, branch.branch_name
             );
 
             let output = Command::new("git")
@@ -263,7 +263,7 @@ impl GitChain {
                 .arg(common_point)
                 .arg(&branch.branch_name)
                 .output()
-                .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
             println!();
             println!("{}", command);
@@ -313,7 +313,7 @@ impl GitChain {
                          \n\
                          Or run '{} rebase --skip' to skip this branch,\n\
                          or  '{} rebase --abort' to cancel and restore all branches.",
-                        &branch.branch_name,
+                        branch.branch_name,
                         prev_branch_name,
                         self.executable_name,
                         self.executable_name,
@@ -610,7 +610,7 @@ impl GitChain {
 
                         // Create backup before destructive reset
                         self.create_backup_branch(&state.chain_name, &branch_name)?;
-                        let backup_name = format!("backup-{}/{}", state.chain_name, &branch_name);
+                        let backup_name = format!("backup-{}/{}", state.chain_name, branch_name);
                         println!("📦 Created backup branch: {}", backup_name.bold());
 
                         let command = format!("git reset --hard {}", parent_name);
@@ -619,10 +619,10 @@ impl GitChain {
                             .arg("--hard")
                             .arg(parent_name.as_str())
                             .output()
-                            .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
                         if !output.status.success() {
-                            return Err(Error::from_str(&format!("Unable to run: {}", &command)));
+                            return Err(Error::from_str(&format!("Unable to run: {}", command)));
                         }
 
                         println!(
@@ -655,7 +655,7 @@ impl GitChain {
                 .arg(common_point.as_str())
                 .arg(branch_name.as_str())
                 .output()
-                .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
             println!("{}", command);
 
@@ -924,7 +924,7 @@ impl GitChain {
 
                         // Create backup before destructive reset
                         self.create_backup_branch(&state.chain_name, &branch_name)?;
-                        let backup_name = format!("backup-{}/{}", state.chain_name, &branch_name);
+                        let backup_name = format!("backup-{}/{}", state.chain_name, branch_name);
                         println!("📦 Created backup branch: {}", backup_name.bold());
 
                         let command = format!("git reset --hard {}", parent_name);
@@ -933,10 +933,10 @@ impl GitChain {
                             .arg("--hard")
                             .arg(parent_name.as_str())
                             .output()
-                            .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
                         if !output.status.success() {
-                            return Err(Error::from_str(&format!("Unable to run: {}", &command)));
+                            return Err(Error::from_str(&format!("Unable to run: {}", command)));
                         }
 
                         println!(
@@ -969,7 +969,7 @@ impl GitChain {
                 .arg(common_point.as_str())
                 .arg(branch_name.as_str())
                 .output()
-                .unwrap_or_else(|_| panic!("Unable to run: {}", &command));
+                .unwrap_or_else(|_| panic!("Unable to run: {}", command));
 
             println!("{}", command);
 
