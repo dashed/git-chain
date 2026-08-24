@@ -15,7 +15,7 @@ jobs:
     name: CI Pipeline
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Install Rust stable
       uses: dtolnay/rust-toolchain@stable
@@ -23,7 +23,7 @@ jobs:
         components: rustfmt, clippy
 
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v6
       with:
         path: |
           ~/.cargo/registry
@@ -45,7 +45,7 @@ jobs:
           - beta
           - nightly
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Install Rust ${{ matrix.rust }}
       uses: dtolnay/rust-toolchain@master
@@ -54,7 +54,7 @@ jobs:
         components: rustfmt, clippy
 
     - name: Cache dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v6
       with:
         path: |
           ~/.cargo/registry
