@@ -280,16 +280,28 @@ the guard to read `rebase-merge/head-name` / `rebase-apply/head-name`.
 
 ## 4. Consolidated remediation plan
 
-**P0 — data safety (small diffs, high value):**
-1. C1: never `delete_state` on failure; advise `--abort`.
-2. F2: add `--no-update-refs` to all three `git rebase` invocations.
-3. H2: verified, reflogged, honest `--abort` (CAS or warn-and-skip on moved
-   branches; `-m`; reject zero OIDs; truthful summary).
-4. H1: cleanup deletes only backups recorded as created by this run.
+**P0 — data safety: ✅ ALL FIXED (2026-08-24), each guarded by inverted
+characterization tests:**
+1. C1 — fixed in `4815307`: state kept on failure with recovery advice;
+   `--continue` additionally retries the Failed branch (found during the fix:
+   the old resume logic skipped it, silently rebuilding a broken chain and
+   deleting the state).
+2. F2 — fixed in `d028442`: all three invocations run
+   `-c rebase.updateRefs=false` (the `-c` form avoids a git version floor).
+3. H2 — fixed in `e057fda` (folds in H4, L3, L4): abort leaves moved-or-deleted
+   untouched branches as-is with warnings, refuses unusable/zero OIDs (can
+   never delete a branch), writes reflog messages, reports truthfully,
+   keeps state on restore failure, and deletes state before the final
+   checkout so it cannot wedge.
+4. H1 — fixed in `919ff72`: state records `created_backups`
+   (`#[serde(default)]` — old state files still parse) and cleanup deletes
+   only those; user/manual backups survive.
 
 **P1 — recovery & correctness:**
-5. H3: `rebase --quit` + state-path in errors + version check.
-6. H4: reorder abort's delete-state before final checkout.
+5. H3: `rebase --quit` + state-path in errors + version check. *(Still open;
+   its characterization test still passes-as-defect.)*
+6. H4: ~~reorder abort's delete-state before final checkout~~ — done with H2
+   in `e057fda`.
 7. F1: fork-point-as-negative-ref invocation (restore patch-id skipping),
    guarded by the pre-computed SHA.
 8. M2: abort resets the working tree it owns.
