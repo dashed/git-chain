@@ -137,6 +137,7 @@ where
                     "abort_rebase",
                     "skip_rebase",
                     "status_rebase",
+                    "quit_rebase",
                 ])
                 .action(ArgAction::SetTrue),
         )
@@ -151,6 +152,7 @@ where
                     "continue_rebase",
                     "skip_rebase",
                     "status_rebase",
+                    "quit_rebase",
                 ])
                 .action(ArgAction::SetTrue),
         )
@@ -165,6 +167,7 @@ where
                     "continue_rebase",
                     "abort_rebase",
                     "status_rebase",
+                    "quit_rebase",
                 ])
                 .action(ArgAction::SetTrue),
         )
@@ -179,6 +182,28 @@ where
                     "continue_rebase",
                     "abort_rebase",
                     "skip_rebase",
+                    "quit_rebase",
+                ])
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("quit_rebase")
+                .long("quit")
+                .help("Discard the chain rebase state without touching any branch")
+                .long_help(
+                    "Discard the chain rebase state without touching any branch.\n\n\
+                     This is the escape hatch for a state file the other recovery commands \
+                     cannot read. Branches are left exactly where they are — nothing is \
+                     restored, so use '--abort' instead if you want the chain rewound.",
+                )
+                .conflicts_with_all([
+                    "step",
+                    "ignore_root",
+                    "squashed_merge",
+                    "continue_rebase",
+                    "abort_rebase",
+                    "skip_rebase",
+                    "status_rebase",
                 ])
                 .action(ArgAction::SetTrue),
         )
@@ -191,7 +216,7 @@ where
                      Only the backups this rebase run created are removed. Backups made by \
                      'git chain backup' or by an earlier run are left alone.",
                 )
-                .conflicts_with_all(["abort_rebase", "status_rebase"])
+                .conflicts_with_all(["abort_rebase", "status_rebase", "quit_rebase"])
                 .action(ArgAction::SetTrue),
         );
 

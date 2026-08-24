@@ -278,6 +278,10 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                 git_chain.rebase_skip(cleanup_backups)?;
             } else if sub_matches.get_flag("abort_rebase") {
                 git_chain.rebase_abort()?;
+            } else if sub_matches.get_flag("quit_rebase") {
+                // Dispatched before the chain lookup below: --quit must work even when the
+                // current branch is not part of a chain.
+                git_chain.rebase_quit()?;
             } else {
                 // Rebase all branches for the current chain.
                 let branch_name = git_chain.get_current_branch_name()?;

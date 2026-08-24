@@ -7,7 +7,9 @@ use git2::{Error, RepositoryState};
 
 use super::GitChain;
 use crate::error::ErrorExt;
-use crate::rebase_state::{delete_state, read_state, state_exists, write_state};
+use crate::rebase_state::{
+    delete_state, read_state, state_exists, state_file_path, write_state, STATE_VERSION,
+};
 use crate::types::{
     BranchRebaseStatus, BranchState, ChainRebaseState, RebaseStateOptions, SquashedRebaseHandling,
 };
@@ -26,10 +28,23 @@ impl GitChain {
         // without this it would happily rebase branches the paused run is still tracking,
         // invalidating that run's recorded originals and pre-computed merge bases.
         if state_exists(&self.repo) {
-            let existing_state = read_state(&self.repo);
-            let chain_info = match &existing_state {
+            // An unreadable state file cannot be resumed, skipped, aborted or reported on —
+            // every one of those parses it first. Say so, and point at the one command that
+            // does not: --quit.
+            let chain_info = match read_state(&self.repo) {
                 Ok(state) => format!(" for chain '{}'", state.chain_name),
-                Err(_) => String::new(),
+                Err(e) => {
+                    return Err(Error::from_str(&format!(
+                        "🛑 A chain rebase state file exists but cannot be read:\n\
+                         {}\n\n\
+                         '{} rebase --continue', '--skip', '--abort' and '--status' all read \
+                         this file, so none of them can run either.\n\
+                         Run '{} rebase --quit' to discard it without touching any branch.",
+                        e.message(),
+                        self.executable_name,
+                        self.executable_name
+                    )));
+                }
             };
 
             if step_rebase {
@@ -37,8 +52,13 @@ impl GitChain {
                     "🛑 A chain rebase is already in progress{}.\n\
                      '{} rebase --step' cannot run while it is paused.\n\
                      Use '{} rebase --continue' to resume it,\n\
-                     or  '{} rebase --abort' to cancel and restore all branches.",
-                    chain_info, self.executable_name, self.executable_name, self.executable_name
+                         '{} rebase --abort' to cancel and restore all branches,\n\
+                     or  '{} rebase --quit' to discard the state and leave every branch as-is.",
+                    chain_info,
+                    self.executable_name,
+                    self.executable_name,
+                    self.executable_name,
+                    self.executable_name
                 )));
             }
 
@@ -46,8 +66,13 @@ impl GitChain {
                 "🛑 A chain rebase is already in progress{}.\n\
                  Use '{} rebase --continue' to resume after resolving conflicts,\n\
                      '{} rebase --skip' to skip the conflicted branch,\n\
-                 or  '{} rebase --abort' to cancel and restore all branches.",
-                chain_info, self.executable_name, self.executable_name, self.executable_name
+                     '{} rebase --abort' to cancel and restore all branches,\n\
+                 or  '{} rebase --quit' to discard the state and leave every branch as-is.",
+                chain_info,
+                self.executable_name,
+                self.executable_name,
+                self.executable_name,
+                self.executable_name
             )));
         }
 
@@ -121,7 +146,7 @@ impl GitChain {
             };
 
             let state = ChainRebaseState {
-                version: 1,
+                version: STATE_VERSION,
                 chain_name: chain_name.to_string(),
                 original_branch: orig_branch.clone(),
                 root_branch: root_branch.clone(),
@@ -386,7 +411,15 @@ impl GitChain {
         if current_branch != orig_branch {
             println!();
             println!("Switching back to branch: {}", orig_branch.bold());
-            self.checkout_branch(&orig_branch)?;
+            // The rebase itself is done; failing to switch back must not turn a successful
+            // run into a non-zero exit.
+            if let Err(e) = self.checkout_branch(&orig_branch) {
+                println!(
+                    "  ⚠️  Could not switch back to {}: {}",
+                    orig_branch.bold(),
+                    e
+                );
+            }
         }
 
         if step_rebase {
@@ -839,7 +872,15 @@ impl GitChain {
         if current_branch != state.original_branch {
             println!();
             println!("Switching back to branch: {}", state.original_branch.bold());
-            self.checkout_branch(&state.original_branch)?;
+            // The rebase itself is done; failing to switch back must not turn a successful
+            // run into a non-zero exit.
+            if let Err(e) = self.checkout_branch(&state.original_branch) {
+                println!(
+                    "  ⚠️  Could not switch back to {}: {}",
+                    state.original_branch.bold(),
+                    e
+                );
+            }
         }
 
         Ok(())
@@ -1167,7 +1208,15 @@ impl GitChain {
         if current_branch != state.original_branch {
             println!();
             println!("Switching back to branch: {}", state.original_branch.bold());
-            self.checkout_branch(&state.original_branch)?;
+            // The rebase itself is done; failing to switch back must not turn a successful
+            // run into a non-zero exit.
+            if let Err(e) = self.checkout_branch(&state.original_branch) {
+                println!(
+                    "  ⚠️  Could not switch back to {}: {}",
+                    state.original_branch.bold(),
+                    e
+                );
+            }
         }
 
         Ok(())
@@ -1374,6 +1423,38 @@ impl GitChain {
                 if cleaned == 1 { "" } else { "es" }
             );
         }
+    }
+
+    /// Discard the chain rebase state without touching any branch.
+    ///
+    /// git's `rebase --quit` counterpart, and the escape hatch for a state file the other
+    /// recovery commands cannot parse — so this deliberately never reads it.
+    pub fn rebase_quit(&self) -> Result<(), Error> {
+        if !state_exists(&self.repo) {
+            return Err(Error::from_str(
+                "No chain rebase in progress. Nothing to quit.",
+            ));
+        }
+
+        let path = state_file_path(&self.repo);
+
+        // Deliberately not parsed: working on a corrupt or unsupported file is the point.
+        delete_state(&self.repo)?;
+
+        println!("🚪 Discarded the chain rebase state:");
+        println!("  {}", path.display());
+        println!();
+        println!("No branches were touched. They are wherever the interrupted rebase left them.");
+
+        if !matches!(self.repo.state(), RepositoryState::Clean) {
+            println!();
+            println!(
+                "⚠️  A git rebase is still in progress. Run 'git rebase --abort' to undo it, \
+                 or 'git rebase --quit' to leave it as-is."
+            );
+        }
+
+        Ok(())
     }
 
     pub fn rebase_abort(&self) -> Result<(), Error> {

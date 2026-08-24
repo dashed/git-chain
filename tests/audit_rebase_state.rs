@@ -13,8 +13,8 @@
 //! assertions have to flip so the test becomes a regression guard for the
 //! fixed behavior.
 //!
-//! Coverage (status: **C1, H1 and H2 are FIXED**, their tests now guard the
-//! fixes; H3 still characterizes its defect):
+//! Coverage (status: **C1, H1, H2, H3 and H4 are FIXED**; every test here now
+//! guards fixed behavior):
 //!
 //! | Test                                                    | Audit finding | Status  |
 //! |---------------------------------------------------------|---------------|---------|
@@ -25,10 +25,13 @@
 //! | `audit_h4_abort_deletes_state_before_final_checkout`     | H4 · HIGH     | FIXED   |
 //! | `audit_m1_step_refuses_while_a_chain_rebase_is_paused`   | M1 · MEDIUM   | guard   |
 //! | `audit_m4_continue_keeps_state_when_checkout_fails`      | M4 · MEDIUM   | guard   |
+//! | `audit_h3_quit_clears_a_healthy_paused_rebase`           | H3 · HIGH     | guard   |
+//! | `audit_h3_unsupported_state_version_is_rejected`         | H3/L2         | guard   |
+//! | `audit_h4_successful_run_survives_a_failed_switch_back`  | H4 · HIGH     | guard   |
 //!
 //! Rows marked "guard" were written directly against the fixed behavior — they
 //! never characterized a defect, so there is nothing to invert.
-//! | `audit_h3_corrupt_state_wedges_all_recovery_commands`    | H3 · HIGH     | defect  |
+//! | `audit_h3_quit_clears_a_corrupt_state`                   | H3 · HIGH     | FIXED   |
 //! | `audit_h1_cleanup_backups_keeps_user_created_backups`    | H1 · HIGH     | FIXED   |
 
 #[path = "common/mod.rs"]
@@ -1036,6 +1039,500 @@ fn audit_h2_abort_never_deletes_a_branch_on_zero_oid() {
 }
 
 // ---------------------------------------------------------------------------
+// H3 · HIGH — `--quit` on a healthy paused rebase, and version rejection
+// ---------------------------------------------------------------------------
+
+/// Guards `--quit` on a state file that is perfectly readable: it still drops the state
+/// and still touches nothing.
+///
+/// `--quit` is not `--abort`. Abort rewinds every branch; quit walks away and leaves the
+/// chain exactly where the interrupted run left it. That distinction is the whole reason
+/// both exist, so it is asserted directly here: the rewritten branch stays rewritten.
+#[cfg(unix)]
+#[test]
+fn audit_h3_quit_clears_a_healthy_paused_rebase() {
+    let repo_name = "audit_h3_quit_healthy_state";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_2.txt", "contents 2");
+        commit_all(&repo, "commit on some_branch_2");
+    };
+
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "master_extra.txt", "master moved on");
+        commit_all(&repo, "commit on master");
+    };
+
+    checkout_branch(&repo, "some_branch_1");
+    install_pre_rebase_hook_refusing(&path_to_repo, "some_branch_2");
+
+    let branch_1_original = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_text = combined_output(&rebase_output);
+
+    let branch_1_rebased = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_paused = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    assert!(
+        !rebase_output.status.success(),
+        "the hook should make the rebase fail, got: {}",
+        rebase_text
+    );
+    assert!(
+        state_file.exists(),
+        "the failed rebase should have left a state file at {}",
+        state_file.display()
+    );
+    assert_ne!(
+        branch_1_rebased, branch_1_original,
+        "some_branch_1 should have been rewritten before the failure, but is still at {}",
+        branch_1_original
+    );
+
+    let quit_output = run_test_bin(&path_to_repo, vec!["rebase", "--quit"]);
+    let quit_text = combined_output(&quit_output);
+
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_after = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    println!("=== H3/quit DIAGNOSTICS: healthy paused rebase ===");
+    println!("QUIT EXIT SUCCESS: {}", quit_output.status.success());
+    println!("QUIT OUTPUT: {}", quit_text);
+    println!("STATE FILE EXISTS AFTER QUIT: {}", state_file.exists());
+    println!(
+        "some_branch_1: original={} rebased={} after quit={}",
+        branch_1_original, branch_1_rebased, branch_1_after
+    );
+    println!(
+        "quit left the rebased branch rewritten (did NOT rewind like --abort): {}",
+        branch_1_after == branch_1_rebased
+    );
+    println!(
+        "quit names the discarded file: {}",
+        quit_text.contains("chain-rebase-state.json")
+    );
+    println!("EXPECTED: state dropped, branches untouched");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: quit on healthy state");
+    // assert!(false, "quit output: {}", quit_text);
+
+    assert!(
+        quit_output.status.success(),
+        "rebase --quit should succeed on a readable state file, got: {}",
+        quit_text
+    );
+    assert!(
+        quit_text.contains("chain-rebase-state.json"),
+        "rebase --quit should name the file it discarded, got: {}",
+        quit_text
+    );
+    assert!(
+        quit_text.contains("No branches were touched"),
+        "rebase --quit should say it left the branches alone, got: {}",
+        quit_text
+    );
+    assert!(
+        !state_file.exists(),
+        "rebase --quit should remove {}",
+        state_file.display()
+    );
+    // The distinction from --abort: nothing is rewound.
+    assert_eq!(
+        branch_1_after, branch_1_rebased,
+        "rebase --quit must leave the already-rebased some_branch_1 at {}, got {}",
+        branch_1_rebased, branch_1_after
+    );
+    assert_ne!(
+        branch_1_after, branch_1_original,
+        "rebase --quit must not rewind some_branch_1 to {} — that is --abort's job",
+        branch_1_original
+    );
+    assert_eq!(
+        branch_2_after, branch_2_paused,
+        "rebase --quit must not move some_branch_2 from {}",
+        branch_2_paused
+    );
+
+    // A fresh rebase runs normally afterwards.
+    std::fs::remove_file(path_to_repo.join(".git/hooks/pre-rebase")).unwrap();
+    let fresh_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let fresh_text = combined_output(&fresh_output);
+
+    println!("FRESH REBASE SUCCESS: {}", fresh_output.status.success());
+
+    assert!(
+        fresh_output.status.success(),
+        "a fresh chain rebase should work once the state is gone, got: {}",
+        fresh_text
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+/// Guards the version check in `read_state`: a state file from a build with a different
+/// schema is rejected by name, not misread.
+///
+/// `version` was written but never checked (REBASE_AUDIT L2), so a future schema change
+/// would have been silently misinterpreted. The rejection names the file, the version it
+/// found, and `--quit` — which then clears it.
+#[test]
+fn audit_h3_unsupported_state_version_is_rejected() {
+    let repo_name = "audit_h3_unsupported_state_version";
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    let args: Vec<&str> = vec!["setup", "chain_name", "master", "some_branch_1"];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    checkout_branch(&repo, "some_branch_1");
+    let branch_1_before = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    // Schema-complete and well-formed — the only problem is the version.
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+    let future_state = format!(
+        r#"{{
+  "version": 999,
+  "chain_name": "chain_name",
+  "original_branch": "some_branch_1",
+  "root_branch": "master",
+  "options": {{
+    "step_rebase": false,
+    "ignore_root": false,
+    "squashed_merge_handling": "reset"
+  }},
+  "original_refs": {{ "some_branch_1": "{}" }},
+  "merge_bases": ["{}"],
+  "branches": [
+    {{ "name": "some_branch_1", "parent": "master", "status": "pending" }}
+  ],
+  "current_index": 0,
+  "completed_count": 0,
+  "total_count": 1
+}}
+"#,
+        branch_1_before, branch_1_before
+    );
+    std::fs::write(&state_file, future_state).unwrap();
+
+    let status_output = run_test_bin(&path_to_repo, vec!["rebase", "--status"]);
+    let status_text = combined_output(&status_output);
+
+    let plain_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let plain_text = combined_output(&plain_output);
+
+    println!("=== H3/version DIAGNOSTICS ===");
+    println!(
+        "--status SUCCESS: {} | {}",
+        status_output.status.success(),
+        status_text.trim()
+    );
+    println!(
+        "rebase   SUCCESS: {} | {}",
+        plain_output.status.success(),
+        plain_text.trim()
+    );
+    println!(
+        "--status names the version found: {}",
+        status_text.contains("999")
+    );
+    println!(
+        "--status names the state file: {}",
+        status_text.contains("chain-rebase-state.json")
+    );
+    println!(
+        "--status advises --quit: {}",
+        status_text.contains("rebase --quit")
+    );
+    println!("EXPECTED: the unsupported version is rejected and --quit clears it");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: unsupported state version");
+    // assert!(false, "status: {}", status_text);
+    // assert!(false, "plain: {}", plain_text);
+
+    assert!(
+        !status_output.status.success(),
+        "rebase --status should reject an unsupported state version, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("999"),
+        "the rejection should name the version it found, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("chain-rebase-state.json"),
+        "the rejection should name the state file, got: {}",
+        status_text
+    );
+    assert!(
+        status_text.contains("rebase --quit"),
+        "the rejection should advise --quit, got: {}",
+        status_text
+    );
+
+    // The bare command diagnoses it the same way rather than treating it as healthy.
+    assert!(
+        !plain_output.status.success(),
+        "bare rebase should be refused while an unreadable state file exists, got: {}",
+        plain_text
+    );
+    assert!(
+        plain_text.contains("cannot be read"),
+        "bare rebase should say the state file cannot be read, got: {}",
+        plain_text
+    );
+    assert!(
+        plain_text.contains("rebase --quit"),
+        "bare rebase should advise --quit, got: {}",
+        plain_text
+    );
+
+    let quit_output = run_test_bin(&path_to_repo, vec!["rebase", "--quit"]);
+    let quit_text = combined_output(&quit_output);
+
+    let branch_1_after = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+
+    println!(
+        "QUIT SUCCESS: {} | {}",
+        quit_output.status.success(),
+        quit_text
+    );
+    println!("STATE FILE EXISTS AFTER QUIT: {}", state_file.exists());
+
+    assert!(
+        quit_output.status.success(),
+        "rebase --quit should clear an unsupported-version state file, got: {}",
+        quit_text
+    );
+    assert!(
+        !state_file.exists(),
+        "rebase --quit should remove {}",
+        state_file.display()
+    );
+    assert_eq!(
+        branch_1_after, branch_1_before,
+        "rebase --quit must not move some_branch_1 from {}",
+        branch_1_before
+    );
+
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
+// H4 · HIGH — a completed run must not fail on the final branch switch
+// ---------------------------------------------------------------------------
+
+/// Guards the tail-checkout half of **H4**: `rebase`, `--continue` and `--skip` used to
+/// end with a bare `?` on the switch back to the original branch, so a rebase that had
+/// already finished — state deleted, every branch rewritten — still exited non-zero if
+/// that last checkout failed.
+///
+/// Here the original branch is claimed by a linked worktree while the run is paused, so
+/// the `--continue` that completes the chain cannot switch back to it. The run must still
+/// report success and merely warn.
+#[test]
+fn audit_h4_successful_run_survives_a_failed_switch_back() {
+    let repo_name = "audit_h4_failed_switch_back";
+    let worktree_dir = generate_path_to_repo(format!("{}_worktree", repo_name));
+    std::fs::remove_dir_all(&worktree_dir).ok();
+
+    let repo = setup_git_repo(repo_name);
+    let path_to_repo = generate_path_to_repo(repo_name);
+
+    {
+        create_new_file(&path_to_repo, "hello_world.txt", "Hello, world!");
+        first_commit_all(&repo, "first commit");
+    };
+
+    // some_branch_1 rebases cleanly; some_branch_2 collides with master.
+    {
+        let branch_name = "some_branch_1";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "file_1.txt", "contents 1");
+        commit_all(&repo, "commit on some_branch_1");
+    };
+
+    {
+        let branch_name = "some_branch_2";
+        create_branch(&repo, branch_name);
+        checkout_branch(&repo, branch_name);
+        create_new_file(&path_to_repo, "shared.txt", "branch 2 version");
+        commit_all(&repo, "commit on some_branch_2");
+    };
+
+    let args: Vec<&str> = vec![
+        "setup",
+        "chain_name",
+        "master",
+        "some_branch_1",
+        "some_branch_2",
+    ];
+    run_test_bin_expect_ok(&path_to_repo, args);
+
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "shared.txt", "master version");
+        commit_all(&repo, "conflicting commit on master");
+    };
+
+    // Starting here makes some_branch_1 the recorded original_branch.
+    checkout_branch(&repo, "some_branch_1");
+    let state_file = path_to_repo.join(".git/chain-rebase-state.json");
+
+    let rebase_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let rebase_text = combined_output(&rebase_output);
+
+    assert!(
+        !rebase_output.status.success(),
+        "the rebase should stop on the conflict in some_branch_2, got: {}",
+        rebase_text
+    );
+    assert!(
+        state_file.exists(),
+        "the paused rebase should have left a state file at {}",
+        state_file.display()
+    );
+
+    // Claim the original branch while the run is paused; the main worktree is mid-rebase
+    // with a detached HEAD, so it is free to take.
+    let worktree_output = run_git_command(
+        &path_to_repo,
+        vec![
+            "worktree",
+            "add",
+            &format!("../{}_worktree", repo_name),
+            "some_branch_1",
+        ],
+    );
+    assert!(
+        worktree_output.status.success(),
+        "git worktree add should succeed but got: {}",
+        String::from_utf8_lossy(&worktree_output.stderr)
+    );
+
+    // Resolve the conflict so the chain rebase can run to completion.
+    create_new_file(&path_to_repo, "shared.txt", "resolved version");
+    let add_output = run_git_command(&path_to_repo, vec!["add", "shared.txt"]);
+    assert!(
+        add_output.status.success(),
+        "staging the resolved file should succeed, got: {}",
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+    let git_continue = run_git_command(
+        &path_to_repo,
+        vec!["-c", "core.editor=true", "rebase", "--continue"],
+    );
+    assert!(
+        git_continue.status.success(),
+        "git rebase --continue should succeed, got: {}",
+        combined_output(&git_continue)
+    );
+
+    // The command under test: it completes the chain, then cannot switch back.
+    let continue_output = run_test_bin(&path_to_repo, vec!["rebase", "--continue"]);
+    let continue_text = combined_output(&continue_output);
+
+    println!("=== H4/tail-checkout DIAGNOSTICS ===");
+    println!(
+        "CONTINUE EXIT SUCCESS: {}",
+        continue_output.status.success()
+    );
+    println!("CONTINUE OUTPUT: {}", continue_text);
+    println!("STATE FILE EXISTS AFTER CONTINUE: {}", state_file.exists());
+    println!(
+        "the failed switch-back is a warning: {}",
+        continue_text.contains("Could not switch back to")
+    );
+    println!(
+        "the run reported success: {}",
+        continue_text.contains("Rebase Summary")
+    );
+    println!("EXPECTED: exit 0 with a warning, not a failed command");
+    println!("======");
+
+    // Uncomment to stop test execution and debug this test case
+    // assert!(false, "DEBUG STOP: H4 tail checkout");
+    // assert!(false, "continue output: {}", continue_text);
+
+    assert!(
+        continue_output.status.success(),
+        "a completed chain rebase must not fail because the final switch back failed, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("Could not switch back to"),
+        "the failed switch back should be reported as a warning, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("checked out in another worktree"),
+        "the warning should explain why the switch back failed, got: {}",
+        continue_text
+    );
+    assert!(
+        continue_text.contains("Rebase Summary"),
+        "the run should still print its summary, got: {}",
+        continue_text
+    );
+    assert!(
+        !state_file.exists(),
+        "the completed run should have consumed the state at {}",
+        state_file.display()
+    );
+
+    std::fs::remove_dir_all(&worktree_dir).ok();
+    teardown_git_repo(repo_name);
+}
+
+// ---------------------------------------------------------------------------
 // M1 · MEDIUM — `--step` must not run while a chain rebase is paused
 // ---------------------------------------------------------------------------
 
@@ -1637,31 +2134,24 @@ fn audit_h4_abort_deletes_state_before_final_checkout() {
 }
 
 // ---------------------------------------------------------------------------
-// H3 · HIGH — a corrupt state file wedges every command; no `--quit`
+// H3 · HIGH (FIXED) — `--quit` clears a state file nothing else can read
 // ---------------------------------------------------------------------------
 
-/// Documents audit finding **H3**: `read_state` (`src/rebase_state.rs:19-30`)
-/// hard-fails on any schema mismatch, and all four recovery entry points call
-/// it. Meanwhile the guard in `rebase()` (`operations.rs:26-37`) only checks
-/// `state_exists` and swallows the read error, so a bare `rebase` is refused
-/// with advice pointing at the very commands that cannot run.
+/// Guards the fix for audit finding **H3**: `--status`, `--continue`, `--skip` and
+/// `--abort` all parse the state file, so an unreadable one still stops all four — but
+/// their errors now name the file and point at `rebase --quit`, and `--quit` itself
+/// never parses it, so it always works.
 ///
-/// The result is a repository that cannot be recovered through git-chain at
-/// all. git's equivalent escape hatch is `git rebase --quit`
-/// (`builtin/rebase.c:1177-1178`), which git-chain has no counterpart for.
+/// That mirrors git's own escape hatch, `git rebase --quit`
+/// (`builtin/rebase.c:1177-1178`): drop the state, touch nothing.
 ///
-/// The state file written here is well-formed JSON that is missing exactly one
-/// required field (`merge_bases`), modelling a partial write or a schema change
-/// between versions.
+/// The state file written here is well-formed JSON missing exactly one required field
+/// (`merge_bases`), modelling a partial write or a schema change between versions.
 ///
-/// AFTER THE FIX (add `rebase --quit`, or make recovery tolerate unreadable state):
-///   - at least one of `--status` / `--abort` / `--quit` must SUCCEED and clear
-///     the state file
-///   - the parse error must name the state file path, so
-///     `mentions_state_file_path` flips to `true`
+/// This test fails if the repository can be wedged by an unreadable state file again.
 #[test]
-fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
-    let repo_name = "audit_h3_corrupt_state_wedges_repo";
+fn audit_h3_quit_clears_a_corrupt_state() {
+    let repo_name = "audit_h3_quit_clears_corrupt_state";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
 
@@ -1697,6 +2187,9 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
 
     checkout_branch(&repo, "some_branch_1");
     assert_eq!(&get_current_branch_name(&repo), "some_branch_1");
+
+    let branch_1_before = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_before = rev_parse(&path_to_repo, "some_branch_2").unwrap();
 
     // Write a state file that is valid JSON but missing the required
     // `merge_bases` field (see `ChainRebaseState` in src/types.rs).
@@ -1743,11 +2236,7 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
     let plain_text = combined_output(&plain_output);
 
     let parse_error = "Failed to parse chain rebase state file";
-    let mentions_state_file_path = status_text.contains("chain-rebase-state.json")
-        || continue_text.contains("chain-rebase-state.json")
-        || skip_text.contains("chain-rebase-state.json")
-        || abort_text.contains("chain-rebase-state.json")
-        || plain_text.contains("chain-rebase-state.json");
+    let state_file_name = "chain-rebase-state.json";
 
     println!("=== H3 DIAGNOSTICS: every entry point against a corrupt state ===");
     println!(
@@ -1776,12 +2265,20 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
         plain_text.trim()
     );
     println!(
-        "any output names the state file path: {}",
-        mentions_state_file_path
+        "--status names the state file: {}",
+        status_text.contains(state_file_name)
     );
     println!(
-        "bare rebase names the affected chain: {}",
-        plain_text.contains("chain_name")
+        "--abort names the state file: {}",
+        abort_text.contains(state_file_name)
+    );
+    println!(
+        "bare rebase says the state cannot be read: {}",
+        plain_text.contains("cannot be read")
+    );
+    println!(
+        "bare rebase advises --quit: {}",
+        plain_text.contains("rebase --quit")
     );
     println!("state file still present: {}", state_file.exists());
     println!("======");
@@ -1793,6 +2290,8 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
     // assert!(false, "abort: {}", abort_text);
     // assert!(false, "plain rebase: {}", plain_text);
 
+    // The four parsing commands still cannot run — they genuinely need the state — but
+    // each now says where the file is and how to get out.
     assert!(
         !status_output.status.success(),
         "rebase --status should fail on a corrupt state file, got: {}",
@@ -1808,6 +2307,11 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
         "rebase --status should name the missing field, got: {}",
         status_text
     );
+    assert!(
+        status_text.contains(state_file_name),
+        "rebase --status should name the state file, got: {}",
+        status_text
+    );
 
     assert!(
         !continue_output.status.success(),
@@ -1815,8 +2319,8 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
         continue_text
     );
     assert!(
-        continue_text.contains(parse_error),
-        "rebase --continue should report a parse failure, got: {}",
+        continue_text.contains(state_file_name),
+        "rebase --continue should name the state file, got: {}",
         continue_text
     );
 
@@ -1826,8 +2330,8 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
         skip_text
     );
     assert!(
-        skip_text.contains(parse_error),
-        "rebase --skip should report a parse failure, got: {}",
+        skip_text.contains(state_file_name),
+        "rebase --skip should name the state file, got: {}",
         skip_text
     );
 
@@ -1837,52 +2341,115 @@ fn audit_h3_corrupt_state_wedges_all_recovery_commands() {
         abort_text
     );
     assert!(
-        abort_text.contains(parse_error),
-        "rebase --abort should report a parse failure, got: {}",
+        abort_text.contains(state_file_name),
+        "rebase --abort should name the state file, got: {}",
         abort_text
     );
 
-    // The bare command refuses too, and its advice points at the four commands
-    // that were just shown to be unusable.
+    // The bare command diagnoses the corruption instead of reporting a healthy
+    // in-progress rebase, and points at the one command that can help.
     assert!(
         !plain_output.status.success(),
         "bare git chain rebase should be refused while a state file exists, got: {}",
         plain_text
     );
     assert!(
-        plain_text.contains("A chain rebase is already in progress"),
-        "bare git chain rebase should report an in-progress rebase, got: {}",
+        plain_text.contains("cannot be read"),
+        "bare git chain rebase should say the state file cannot be read, got: {}",
         plain_text
     );
     assert!(
-        plain_text.contains("rebase --abort"),
-        "bare git chain rebase should advise --abort even though it cannot run, got: {}",
+        plain_text.contains(state_file_name),
+        "bare git chain rebase should name the state file, got: {}",
+        plain_text
+    );
+    assert!(
+        plain_text.contains("rebase --quit"),
+        "bare git chain rebase should advise --quit, got: {}",
+        plain_text
+    );
+    assert!(
+        !plain_text.contains("A chain rebase is already in progress"),
+        "a corrupt state should not be reported as a healthy in-progress rebase, got: {}",
         plain_text
     );
 
-    // DEFECT: the guard swallows the read error (`operations.rs:27-31`), so the
-    // message cannot even name the chain and never hints that the state is
-    // corrupt rather than merely in progress.
-    assert!(
-        !plain_text.contains("chain_name"),
-        "DEFECT H3 no longer reproduces: bare git chain rebase now names the chain, \
-         which means the state was read successfully. Got: {}",
-        plain_text
+    // The escape hatch: --quit never parses the file, so it works where nothing else does.
+    let quit_output = run_test_bin(&path_to_repo, vec!["rebase", "--quit"]);
+    let quit_text = combined_output(&quit_output);
+
+    let branch_1_after_quit = rev_parse(&path_to_repo, "some_branch_1").unwrap();
+    let branch_2_after_quit = rev_parse(&path_to_repo, "some_branch_2").unwrap();
+
+    println!(
+        "QUIT SUCCESS: {} | {}",
+        quit_output.status.success(),
+        quit_text
+    );
+    println!("STATE FILE EXISTS AFTER QUIT: {}", state_file.exists());
+    println!(
+        "branches unmoved by --quit: some_branch_1={} some_branch_2={}",
+        branch_1_after_quit == branch_1_before,
+        branch_2_after_quit == branch_2_before
     );
 
-    // DEFECT: the user is never told where the file lives, so there is no way
-    // out short of knowing git-chain internals.
     assert!(
-        !mentions_state_file_path,
-        "DEFECT H3 no longer reproduces: some output now names chain-rebase-state.json. \
-         If the fix landed, invert this assertion (see AFTER THE FIX above)."
+        quit_output.status.success(),
+        "rebase --quit should succeed against a corrupt state file, got: {}",
+        quit_text
+    );
+    assert!(
+        quit_text.contains(state_file_name),
+        "rebase --quit should name the file it discarded, got: {}",
+        quit_text
+    );
+    assert!(
+        quit_text.contains("No branches were touched"),
+        "rebase --quit should say it left the branches alone, got: {}",
+        quit_text
+    );
+    assert!(
+        !state_file.exists(),
+        "rebase --quit should remove {}",
+        state_file.display()
+    );
+    assert_eq!(
+        branch_1_after_quit, branch_1_before,
+        "rebase --quit must not move some_branch_1 from {}",
+        branch_1_before
+    );
+    assert_eq!(
+        branch_2_after_quit, branch_2_before,
+        "rebase --quit must not move some_branch_2 from {}",
+        branch_2_before
     );
 
-    // DEFECT: nothing cleared the state, so the repository stays wedged.
+    // And the repository is usable again.
+    {
+        checkout_branch(&repo, "master");
+        create_new_file(&path_to_repo, "master_extra.txt", "master moved on");
+        commit_all(&repo, "commit on master");
+    };
+    checkout_branch(&repo, "some_branch_1");
+
+    let fresh_output = run_test_bin(&path_to_repo, vec!["rebase"]);
+    let fresh_text = combined_output(&fresh_output);
+
+    println!(
+        "FRESH REBASE SUCCESS: {} | {}",
+        fresh_output.status.success(),
+        fresh_text
+    );
+
     assert!(
-        state_file.exists(),
-        "DEFECT H3 no longer reproduces: the state file was cleared by one of the \
-         recovery commands. If the fix landed, invert this assertion."
+        fresh_output.status.success(),
+        "a fresh chain rebase should work once the state is gone, got: {}",
+        fresh_text
+    );
+    assert!(
+        fresh_text.contains("Successfully rebased chain"),
+        "the fresh rebase should complete the chain, got: {}",
+        fresh_text
     );
 
     teardown_git_repo(repo_name);

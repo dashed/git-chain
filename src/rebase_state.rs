@@ -3,7 +3,11 @@ use std::path::PathBuf;
 
 use git2::{Error, Repository};
 
+use crate::executable_name;
 use crate::types::ChainRebaseState;
+
+/// Schema version this build writes and accepts.
+pub const STATE_VERSION: u32 = 1;
 
 /// Returns the path to the chain rebase state file.
 pub fn state_file_path(repo: &Repository) -> PathBuf {
@@ -25,8 +29,29 @@ pub fn read_state(repo: &Repository) -> Result<ChainRebaseState, Error> {
             e
         ))
     })?;
-    serde_json::from_str(&contents)
-        .map_err(|e| Error::from_str(&format!("Failed to parse chain rebase state file: {}", e)))
+    let state: ChainRebaseState = serde_json::from_str(&contents).map_err(|e| {
+        Error::from_str(&format!(
+            "Failed to parse chain rebase state file at {}: {}\n\
+             Run '{} rebase --quit' to discard it without touching any branch.",
+            path.display(),
+            e,
+            executable_name()
+        ))
+    })?;
+
+    if state.version != STATE_VERSION {
+        return Err(Error::from_str(&format!(
+            "Unsupported chain rebase state version {} in {} (this build understands version {}).\n\
+             The file was written by a different version of git-chain.\n\
+             Run '{} rebase --quit' to discard it without touching any branch.",
+            state.version,
+            path.display(),
+            STATE_VERSION,
+            executable_name()
+        )));
+    }
+
+    Ok(state)
 }
 
 /// Serializes and writes the chain rebase state to file.
