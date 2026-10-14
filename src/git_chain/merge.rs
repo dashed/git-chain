@@ -1,12 +1,20 @@
 use std::process::Command;
 
 use colored::*;
-use git2::{Error, RepositoryState};
+use git2::{Error, Oid, RepositoryState};
 
 use super::GitChain;
 use crate::error::ErrorExt;
 use crate::types::*;
 use crate::Chain;
+
+struct MergeOperation {
+    parent_branch: String,
+    branch_name: String,
+    before: Oid,
+    after: Oid,
+    parent_tip: Oid,
+}
 
 impl GitChain {
     pub fn is_squashed_merged(
@@ -280,121 +288,63 @@ impl GitChain {
             ))
         }
     }
-    pub fn get_merge_commit_info(
-        &self,
-        parent_branch: &str,
-        branch_name: &str,
-    ) -> Result<Vec<MergeCommitInfo>, Error> {
-        // Get the latest commit on the branch
-        let mut command = Command::new("git");
-        command.args(["log", "--oneline", "-1", branch_name]);
-        let output = match command.output() {
-            Ok(output) => output,
-            Err(_) => return Ok(vec![]), // Return empty vec on error
-        };
-
-        if !output.status.success() {
-            return Ok(vec![]);
-        }
-
-        let latest_commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if latest_commit.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Check if it's a merge commit by looking for parent commits
-        let commit_hash = latest_commit.split_whitespace().next().unwrap_or("");
-        if commit_hash.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Get commit information
-        let mut command = Command::new("git");
-        command.args(["show", "--stat", commit_hash]);
-        let output = match command.output() {
-            Ok(output) => output,
-            Err(_) => return Ok(vec![]),
-        };
-
-        if !output.status.success() {
-            return Ok(vec![]);
-        }
-
-        let commit_info = String::from_utf8_lossy(&output.stdout).to_string();
-
-        // Check if it's a merge commit, which typically contains "Merge" in the commit message
-        if commit_info.contains(&format!("Merge branch '{}'", parent_branch))
-            || commit_info.contains("Merge branch")
-        {
-            // Extract commit message (first line after commit hash)
-            let commit_lines: Vec<&str> = commit_info.lines().collect();
-            let message = commit_lines
-                .iter()
-                .position(|line| line.trim().starts_with("Merge branch"))
-                .map(|idx| commit_lines[idx].trim().to_string());
-
-            // Extract stats
-            let stats_line = commit_lines
-                .iter()
-                .find(|line| line.contains("files changed") || line.contains("file changed"));
-
-            let stats = stats_line.map(|line| {
-                let mut files_changed = 0;
-                let mut insertions = 0;
-                let mut deletions = 0;
-
-                if let Some(files_idx) = line.find("file changed") {
-                    if let Some(files_num) = line[..files_idx].split_whitespace().last() {
-                        files_changed = files_num.parse().unwrap_or(0);
-                    }
-                } else if let Some(files_idx) = line.find("files changed") {
-                    if let Some(files_num) = line[..files_idx].split_whitespace().last() {
-                        files_changed = files_num.parse().unwrap_or(0);
-                    }
-                }
-
-                if let Some(ins_idx) = line.find("insertion") {
-                    if let Some(ins_end) = line[..ins_idx].rfind(' ') {
-                        if let Some(ins_start) = line[..ins_end].rfind(' ') {
-                            let ins_str = &line[ins_start + 1..ins_end];
-                            insertions = ins_str.parse().unwrap_or(0);
-                        }
-                    }
-                }
-
-                if let Some(del_idx) = line.find("deletion") {
-                    if let Some(del_end) = line[..del_idx].rfind(' ') {
-                        if let Some(del_start) = line[..del_end].rfind(' ') {
-                            let del_str = &line[del_start + 1..del_end];
-                            deletions = del_str.parse().unwrap_or(0);
-                        }
-                    }
-                }
-
-                MergeStats {
-                    files_changed,
-                    insertions,
-                    deletions,
-                }
+    fn get_merge_commit_info(&self, operation: &MergeOperation) -> Result<MergeCommitInfo, Error> {
+        if operation.before == operation.after {
+            // --squash (or a configured --no-commit) can succeed without moving HEAD.
+            return Ok(MergeCommitInfo {
+                message: Some("Merge completed without creating a commit".to_string()),
+                stats: None,
             });
-
-            return Ok(vec![MergeCommitInfo { message, stats }]);
         }
 
-        // It's not a merge commit
-        Ok(vec![])
+        let before = self.repo.find_commit(operation.before)?;
+        let after = self.repo.find_commit(operation.after)?;
+        // A fast-forward can land on an existing merge commit, so test reachability
+        // before inspecting the new tip's parent count or message.
+        let message = if operation.after == operation.parent_tip
+            && self
+                .repo
+                .graph_descendant_of(operation.after, operation.before)?
+        {
+            Some(format!("Fast-forwarded to {}", operation.parent_branch))
+        } else if after.parent_count() == 2
+            && after.parent_id(0)? == operation.before
+            && after.parent_id(1)? == operation.parent_tip
+        {
+            after
+                .summary_bytes()
+                .map(|summary| String::from_utf8_lossy(summary).into_owned())
+        } else {
+            // Do not attribute an unexpected tip (for example, moved by a hook)
+            // to a merge of the parent branch merely because its message matches.
+            Some(format!("Branch tip changed to {}", operation.after))
+        };
+
+        let mut diff =
+            self.repo
+                .diff_tree_to_tree(Some(&before.tree()?), Some(&after.tree()?), None)?;
+        diff.find_similar(None)?;
+        let stats = diff.stats()?;
+        Ok(MergeCommitInfo {
+            message,
+            stats: Some(MergeStats {
+                files_changed: stats.files_changed(),
+                insertions: stats.insertions(),
+                deletions: stats.deletions(),
+            }),
+        })
     }
-    pub fn report_merge_results(
+    fn report_merge_results(
         &self,
         chain_name: &str,
-        merge_operations: usize,
+        merge_operations: &[MergeOperation],
         merge_conflicts: Vec<(String, String)>,
         skipped_branches: Vec<(String, String)>,
         squashed_merges: Vec<(String, String)>,
         options: &MergeOptions,
     ) -> Result<(), Error> {
         println!("\n📊 Merge Summary for Chain: {}", chain_name.bold());
-        println!("  ✅ Successful merges: {}", merge_operations);
+        println!("  ✅ Successful merges: {}", merge_operations.len());
 
         if !merge_conflicts.is_empty() {
             println!("  ⚠️  Merge conflicts: {}", merge_conflicts.len());
@@ -418,7 +368,7 @@ impl GitChain {
         }
 
         // For detailed reporting, show information about each branch merge
-        if matches!(options.report_level, ReportLevel::Detailed) && merge_operations > 0 {
+        if matches!(options.report_level, ReportLevel::Detailed) && !merge_operations.is_empty() {
             println!("\n📝 Detailed Merge Information:");
 
             // Get the chain's branches
@@ -475,45 +425,52 @@ impl GitChain {
                         continue;
                     }
 
-                    // Try to get commit information for successful merges
-                    if let Ok(commits) =
-                        self.get_merge_commit_info(&prev_branch, &branch.branch_name)
-                    {
-                        if commits.is_empty() {
-                            // Branch was already up to date
+                    // Report only operations captured during this run, using the
+                    // frozen tips instead of whatever the branch points to now.
+                    let operation = merge_operations.iter().find(|operation| {
+                        operation.parent_branch == prev_branch
+                            && operation.branch_name == branch.branch_name
+                    });
+                    match operation.map(|operation| self.get_merge_commit_info(operation)) {
+                        None => {
                             println!(
                                 "  {} ➔ {}: {}",
                                 prev_branch.bold(),
                                 branch.branch_name.bold(),
                                 "Already up to date".dimmed()
                             );
-                        } else {
-                            for commit in commits {
-                                println!(
-                                    "  {} ➔ {}: {}",
-                                    prev_branch.bold(),
-                                    branch.branch_name.bold(),
-                                    commit
-                                        .message
-                                        .unwrap_or_else(|| "No commit message".to_string())
-                                        .green()
-                                );
+                        }
+                        Some(Ok(commit)) => {
+                            println!(
+                                "  {} ➔ {}: {}",
+                                prev_branch.bold(),
+                                branch.branch_name.bold(),
+                                commit
+                                    .message
+                                    .unwrap_or_else(|| "No commit message".to_string())
+                                    .green()
+                            );
 
-                                if let Some(stat) = commit.stats {
-                                    println!(
-                                        "    {} insertions(+), {} deletions(-) across {} files",
-                                        stat.insertions, stat.deletions, stat.files_changed
-                                    );
-                                }
+                            if let Some(stat) = commit.stats {
+                                println!(
+                                    "    {} insertions(+), {} deletions(-) across {} files",
+                                    stat.insertions, stat.deletions, stat.files_changed
+                                );
                             }
                         }
+                        Some(Err(err)) => println!(
+                            "  {} ➔ {}: Merged (details unavailable: {})",
+                            prev_branch.bold(),
+                            branch.branch_name.bold(),
+                            err
+                        ),
                     }
                 }
             }
         }
 
         // Overall status message
-        if merge_operations > 0 {
+        if !merge_operations.is_empty() {
             println!("\n🎉 Successfully merged chain {}", chain_name.bold());
         } else if merge_conflicts.is_empty() {
             println!("\nℹ️  Chain {} is already up-to-date.", chain_name.bold());
@@ -611,7 +568,7 @@ impl GitChain {
         };
 
         // Keep track of what happened
-        let mut merge_operations = 0;
+        let mut merge_operations = Vec::new();
         let mut merge_conflicts = Vec::new();
         let mut skipped_branches = Vec::new();
         let mut squashed_merges = Vec::new();
@@ -639,9 +596,6 @@ impl GitChain {
             if options.verbose {
                 println!("\nProcessing branch: {}", branch.branch_name.bold());
             }
-
-            // Store hash before merge for change detection
-            let _before_sha1 = self.get_commit_hash_of_head()?;
 
             // Handle special cases (e.g., squashed merges) unless in simple mode
             if !options.simple_mode
@@ -694,9 +648,29 @@ impl GitChain {
             }
 
             // Perform the merge with all the specified options
+            let before = self.repo.head()?.peel_to_commit()?.id();
+            let parent_tip = self
+                .repo
+                .revparse_single(&prev_branch)?
+                .peel_to_commit()?
+                .id();
             match self.execute_merge(&prev_branch, &options.merge_flags)? {
                 MergeResult::Success(summary) => {
-                    merge_operations += 1;
+                    let after = self.repo.head()?.peel_to_commit()?.id();
+                    // Git's no-op message is translated. Count actual changes,
+                    // including merges that intentionally leave an uncommitted result.
+                    if before != after
+                        || self.repo.state() != RepositoryState::Clean
+                        || self.dirty_working_directory()?
+                    {
+                        merge_operations.push(MergeOperation {
+                            parent_branch: prev_branch.clone(),
+                            branch_name: branch.branch_name.clone(),
+                            before,
+                            after,
+                            parent_tip,
+                        });
+                    }
                     if options.verbose {
                         println!("{}", summary);
                     }
@@ -742,7 +716,7 @@ impl GitChain {
         match options.report_level {
             ReportLevel::Minimal => {
                 // Minimal reporting
-                if merge_operations > 0 {
+                if !merge_operations.is_empty() {
                     println!("Successfully merged chain {}", chain_name.bold());
                 } else if merge_conflicts.is_empty() {
                     println!("Chain {} is already up-to-date.", chain_name.bold());
@@ -754,7 +728,7 @@ impl GitChain {
                 // Standard/Detailed reporting
                 self.report_merge_results(
                     chain_name,
-                    merge_operations,
+                    &merge_operations,
                     merge_conflicts,
                     skipped_branches,
                     squashed_merges,
