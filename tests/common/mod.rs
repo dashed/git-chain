@@ -231,6 +231,9 @@ where
         // to open an editor and fails on CI with "Terminal is dumb, but EDITOR unset".
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
+        // Pin Git's translated output in the child, without changing the test
+        // process environment. LC_ALL overrides inherited LANG and LC_MESSAGES.
+        .env("LC_ALL", "C")
         .args(arguments)
         .output()
         .expect("Failed to run git-chain")
@@ -257,10 +260,11 @@ where
         assert_cmd::Command::cargo_bin(env!("CARGO_PKG_NAME")).expect("Failed to get git-chain");
 
     cmd.current_dir(current_dir_buf)
-        // Non-interactive git defaults (see run_test_bin); caller-supplied
+        // Locale and non-interactive git defaults (see run_test_bin); caller-supplied
         // env_vars are applied afterwards and therefore take precedence.
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
+        .env("LC_ALL", "C")
         .args(arguments)
         .envs(env_vars);
 
@@ -328,6 +332,8 @@ where
         // EDITOR unset"). Mirrors git's own test harness (GIT_EDITOR=:).
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
+        // Match the locale used by git-chain's subprocesses in run_test_bin.
+        .env("LC_ALL", "C")
         .args(arguments)
         .output()
         .expect("Failed to run git");

@@ -211,7 +211,6 @@ fn prune_nonexistent_chain() {
 
 #[test]
 fn rebase_suggests_prune_when_branch_is_ancestor_of_root() {
-    std::env::set_var("LANG", "C");
     let repo_name = "rebase_suggests_prune_when_branch_is_ancestor_of_root";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);
@@ -424,7 +423,6 @@ fn rebase_suggests_prune_when_branch_is_ancestor_of_root() {
 
 #[test]
 fn rebase_does_not_suggest_prune_when_no_ancestor() {
-    std::env::set_var("LANG", "C");
     let repo_name = "rebase_does_not_suggest_prune_when_no_ancestor";
     let repo = setup_git_repo(repo_name);
     let path_to_repo = generate_path_to_repo(repo_name);

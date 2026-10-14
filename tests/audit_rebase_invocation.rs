@@ -159,7 +159,6 @@ fn build_f1_scenario(repo: &Repository, path_to_repo: &Path) {
 /// which is git's own form. Half B remains the reference both halves are compared against.
 #[test]
 fn audit_f1_chain_rebase_skips_already_applied_commits() {
-    std::env::set_var("LANG", "C");
     // ---------------------------------------------------------------------------------
     // Half A — git-chain's construction: expected (defectively) to conflict.
     // ---------------------------------------------------------------------------------

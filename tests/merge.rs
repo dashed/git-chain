@@ -7161,7 +7161,6 @@ fn merge_subcommand_git_merge_flags() {
 /// Test repository state validation in the merge command
 #[test]
 fn merge_subcommand_repository_state_validation() {
-    std::env::set_var("LANG", "C");
     println!("\n=== TEST: MERGE SUBCOMMAND REPOSITORY STATE VALIDATION ===");
     let repo_name = "merge_repo_state_validation";
     let repo = setup_git_repo(repo_name);
