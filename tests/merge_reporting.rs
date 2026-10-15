@@ -251,3 +251,73 @@ fn detailed_merge_counts_no_changes_with_non_english_git() {
     assert!(repo.statuses(None).unwrap().is_empty());
     teardown_git_repo(name);
 }
+
+#[test]
+fn merge_no_report_alias_suppresses_the_summary() {
+    let name = "reporting_no_report_alias";
+    let (repo, path) = reporting_repo(name, &["first"]);
+    advance_both_branches(&repo, &path);
+    let before = repo.head().unwrap().target().unwrap();
+    let root = repo
+        .find_branch("master", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap();
+
+    let output = run_test_bin(&path, ["merge", "--simple", "--no-report"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!(
+        "STDOUT: {stdout}\nSTDERR: {stderr}\nSTATUS: {}",
+        output.status
+    );
+    // assert!(false, "DEBUG STOP: output={output:?}");
+    assert!(output.status.success(), "{output:?}");
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(
+        stdout.contains("Successfully merged chain reporting"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Merge Summary"), "{stdout}");
+    assert!(!stdout.contains("Detailed Merge Information"), "{stdout}");
+    let after = repo.head().unwrap().target().unwrap();
+    assert!(repo.graph_descendant_of(after, before).unwrap());
+    assert!(repo.graph_descendant_of(after, root).unwrap());
+    assert_eq!(repo.find_commit(after).unwrap().parent_count(), 2);
+    teardown_git_repo(name);
+}
+
+#[test]
+fn merge_detailed_report_alias_includes_operation_details() {
+    let name = "reporting_detailed_report_alias";
+    let (repo, path) = reporting_repo(name, &["first"]);
+    advance_both_branches(&repo, &path);
+
+    let output = run_test_bin(&path, ["merge", "--simple", "--detailed-report"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!(
+        "STDOUT: {stdout}\nSTDERR: {stderr}\nSTATUS: {}",
+        output.status
+    );
+    // assert!(false, "DEBUG STOP: output={output:?}");
+    assert!(output.status.success(), "{output:?}");
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(stdout.contains("Successful merges: 1"), "{stdout}");
+    assert!(stdout.contains("Detailed Merge Information"), "{stdout}");
+    assert!(stdout.contains("master ➔ first:"), "{stdout}");
+    assert!(
+        stdout.contains("4 insertions(+), 2 deletions(-) across 2 files"),
+        "{stdout}"
+    );
+    assert_eq!(
+        repo.head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .parent_count(),
+        2
+    );
+    teardown_git_repo(name);
+}

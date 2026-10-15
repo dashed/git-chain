@@ -320,3 +320,23 @@ fn explicit_merge_report_level_takes_precedence_over_aliases() {
         }
     }
 }
+
+#[test]
+fn merge_report_aliases_select_the_requested_level() {
+    let cases: &[(&[&str], ReportLevel)] = &[
+        (&["--no-report"], ReportLevel::Minimal),
+        (&["-n"], ReportLevel::Minimal),
+        (&["--detailed-report"], ReportLevel::Detailed),
+        (&["-d"], ReportLevel::Detailed),
+        (&["--no-report", "--detailed-report"], ReportLevel::Minimal),
+        (&["--detailed-report", "--no-report"], ReportLevel::Minimal),
+        (&["-dn"], ReportLevel::Minimal),
+    ];
+    for (args, expected) in cases {
+        assert_eq!(
+            merge_request(args).options.report_level,
+            *expected,
+            "args: {args:?}"
+        );
+    }
+}

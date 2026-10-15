@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 
+use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::executable_name;
@@ -46,6 +47,8 @@ pub struct OtherCommand {
 /// Parses CLI syntax and normalizes operation options without accessing a repository.
 ///
 /// Help, version, and invalid input are returned as Clap errors so only the binary exits.
+/// An explicit merge `--report-level` overrides both report flags; otherwise `--no-report`
+/// takes precedence over `--detailed-report`.
 pub fn try_parse_from<I, T>(arguments: I) -> Result<CommandRequest, clap::Error>
 where
     I: IntoIterator<Item = T>,
@@ -87,13 +90,19 @@ fn merge_request(args: &ArgMatches) -> MergeRequest {
         Some("merge") => SquashedMergeHandling::Merge,
         _ => SquashedMergeHandling::Reset,
     };
-    let report_level = match args.get_one::<String>("report_level").map(String::as_str) {
-        Some("minimal") => ReportLevel::Minimal,
-        Some("detailed") => ReportLevel::Detailed,
-        Some("standard") => ReportLevel::Standard,
-        _ if args.get_flag("no_report") => ReportLevel::Minimal,
-        _ if args.get_flag("detailed_report") => ReportLevel::Detailed,
-        _ => ReportLevel::Standard,
+    // Clap's default is not an explicit choice and must not shadow the report aliases.
+    let report_level = if args.value_source("report_level") == Some(ValueSource::CommandLine) {
+        match args.get_one::<String>("report_level").map(String::as_str) {
+            Some("minimal") => ReportLevel::Minimal,
+            Some("detailed") => ReportLevel::Detailed,
+            _ => ReportLevel::Standard,
+        }
+    } else if args.get_flag("no_report") {
+        ReportLevel::Minimal
+    } else if args.get_flag("detailed_report") {
+        ReportLevel::Detailed
+    } else {
+        ReportLevel::Standard
     };
 
     MergeRequest {
@@ -477,14 +486,14 @@ fn command() -> Command {
             Arg::new("no_report")
                 .short('n')
                 .long("no-report")
-                .help("Suppress the merge summary report")
+                .help("Suppress the merge summary report unless --report-level is set")
                 .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("detailed_report")
                 .short('d')
                 .long("detailed-report")
-                .help("Show a more detailed merge report")
+                .help("Show a detailed merge report unless --report-level or --no-report is set")
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -524,7 +533,7 @@ fn command() -> Command {
         .arg(
             Arg::new("report_level")
                 .long("report-level")
-                .help("Set the detail level for the merge report [default: standard]")
+                .help("Set the report detail level; overrides --no-report and --detailed-report")
                 .value_parser(["minimal", "standard", "detailed"])
                 .default_value("standard")
                 .action(ArgAction::Set),
