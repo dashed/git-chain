@@ -11,20 +11,20 @@ use crate::rebase_state::{
     delete_state, read_state, state_exists, state_file_path_for_read, write_state, STATE_VERSION,
 };
 use crate::types::{
-    BranchRebaseStatus, BranchState, ChainRebaseState, RebaseStateOptions, SquashedRebaseHandling,
+    BranchRebaseStatus, BranchState, ChainRebaseState, RebaseOptions, RebaseStateOptions,
+    SquashedRebaseHandling,
 };
 use crate::{check_gh_cli_installed, Chain};
 
 impl GitChain {
-    pub fn rebase(
-        &self,
-        chain_name: &str,
-        step_rebase: bool,
-        ignore_root: bool,
-        squashed_merge_handling: SquashedRebaseHandling,
-        cleanup_backups: bool,
-        no_fork_point: bool,
-    ) -> Result<(), Error> {
+    pub fn rebase(&self, chain_name: &str, options: RebaseOptions) -> Result<(), Error> {
+        let RebaseOptions {
+            step_rebase,
+            ignore_root,
+            squashed_merge_handling,
+            cleanup_backups,
+            no_fork_point,
+        } = options;
         self.ensure_no_chain_rebase_in_progress(step_rebase)?;
 
         match self.preliminary_checks(chain_name) {

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // Merge options types
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SquashedMergeHandling {
     // Reset the branch to the parent branch
     Reset,
@@ -14,7 +14,7 @@ pub enum SquashedMergeHandling {
     Merge,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SquashedRebaseHandling {
     // Reset the branch to the parent branch (with auto-backup)
     Reset,
@@ -26,7 +26,7 @@ pub enum SquashedRebaseHandling {
     Rebase,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ReportLevel {
     // Minimal reporting (just success/failure)
     Minimal,
@@ -49,6 +49,7 @@ pub enum MergeResult {
     Conflict(String), // Contains the conflict message
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MergeOptions {
     // Skip the merge of the root branch into the first branch
     pub ignore_root: bool,
@@ -86,6 +87,28 @@ impl Default for MergeOptions {
             return_to_original: true,
             simple_mode: false,
             report_level: ReportLevel::Standard,
+        }
+    }
+}
+
+/// Options for starting a chain rebase; recovery actions use the saved run's options.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct RebaseOptions {
+    pub step_rebase: bool,
+    pub ignore_root: bool,
+    pub squashed_merge_handling: SquashedRebaseHandling,
+    pub cleanup_backups: bool,
+    pub no_fork_point: bool,
+}
+
+impl Default for RebaseOptions {
+    fn default() -> Self {
+        Self {
+            step_rebase: false,
+            ignore_root: false,
+            squashed_merge_handling: SquashedRebaseHandling::Reset,
+            cleanup_backups: false,
+            no_fork_point: false,
         }
     }
 }

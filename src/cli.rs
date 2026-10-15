@@ -3,12 +3,144 @@ use std::ffi::OsString;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
 use crate::executable_name;
+use crate::{
+    MergeOptions, RebaseOptions, ReportLevel, SquashedMergeHandling, SquashedRebaseHandling,
+};
 
-pub fn parse_arg_matches<I, T>(arguments: I) -> ArgMatches
+/// A command whose syntax and operation options have already been validated.
+#[derive(Debug)]
+pub enum CommandRequest {
+    Merge(MergeRequest),
+    Rebase(RebaseAction),
+    Status {
+        show_prs: bool,
+    },
+    /// Commands retained on the existing dispatcher during incremental migration.
+    Other(OtherCommand),
+}
+
+/// Merge options plus an optional chain name, resolved against the repository at execution.
+#[derive(Debug, PartialEq, Eq)]
+pub struct MergeRequest {
+    pub chain_name: Option<String>,
+    pub options: MergeOptions,
+}
+
+/// Start or recover a rebase without conflating saved options with new-run options.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RebaseAction {
+    Start(RebaseOptions),
+    Continue { cleanup_backups: bool },
+    Skip { cleanup_backups: bool },
+    Abort,
+    Quit,
+    Status,
+}
+
+/// An opaque request for a command that still uses the existing dispatcher.
+#[derive(Debug)]
+pub struct OtherCommand {
+    pub(crate) matches: ArgMatches,
+}
+
+/// Parses CLI syntax and normalizes operation options without accessing a repository.
+///
+/// Help, version, and invalid input are returned as Clap errors so only the binary exits.
+pub fn try_parse_from<I, T>(arguments: I) -> Result<CommandRequest, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    let matches = command().try_get_matches_from(arguments)?;
+    Ok(match matches.subcommand() {
+        Some(("merge", args)) => CommandRequest::Merge(merge_request(args)),
+        Some(("rebase", args)) => CommandRequest::Rebase(rebase_action(args)),
+        Some(("status", args)) => CommandRequest::Status {
+            show_prs: args.get_flag("pr"),
+        },
+        None => CommandRequest::Status { show_prs: false },
+        _ => CommandRequest::Other(OtherCommand { matches }),
+    })
+}
+
+fn merge_request(args: &ArgMatches) -> MergeRequest {
+    let mut merge_flags = Vec::new();
+    // Preserve the existing precedence when multiple fast-forward flags are supplied.
+    if args.get_flag("no_ff") {
+        merge_flags.push("--no-ff".to_string());
+    } else if args.get_flag("ff_only") {
+        merge_flags.push("--ff-only".to_string());
+    }
+    if args.get_flag("squash") {
+        merge_flags.push("--squash".to_string());
+    }
+    if let Some(strategy) = args.get_one::<String>("strategy") {
+        merge_flags.push(format!("--strategy={strategy}"));
+    }
+    if let Some(options) = args.get_many::<String>("strategy_option") {
+        merge_flags.extend(options.map(|option| format!("--strategy-option={option}")));
+    }
+
+    let squashed_merge_handling = match args.get_one::<String>("squashed_merge").map(String::as_str)
+    {
+        Some("skip") => SquashedMergeHandling::Skip,
+        Some("merge") => SquashedMergeHandling::Merge,
+        _ => SquashedMergeHandling::Reset,
+    };
+    let report_level = match args.get_one::<String>("report_level").map(String::as_str) {
+        Some("minimal") => ReportLevel::Minimal,
+        Some("detailed") => ReportLevel::Detailed,
+        Some("standard") => ReportLevel::Standard,
+        _ if args.get_flag("no_report") => ReportLevel::Minimal,
+        _ if args.get_flag("detailed_report") => ReportLevel::Detailed,
+        _ => ReportLevel::Standard,
+    };
+
+    MergeRequest {
+        chain_name: args.get_one::<String>("chain").cloned(),
+        options: MergeOptions {
+            ignore_root: args.get_flag("ignore_root"),
+            merge_flags,
+            use_fork_point: !args.get_flag("no_fork_point"),
+            squashed_merge_handling,
+            verbose: args.get_flag("verbose"),
+            return_to_original: !args.get_flag("stay"),
+            simple_mode: args.get_flag("simple"),
+            report_level,
+        },
+    }
+}
+
+fn rebase_action(args: &ArgMatches) -> RebaseAction {
+    let cleanup_backups = args.get_flag("cleanup_backups");
+    if args.get_flag("status_rebase") {
+        RebaseAction::Status
+    } else if args.get_flag("continue_rebase") {
+        RebaseAction::Continue { cleanup_backups }
+    } else if args.get_flag("skip_rebase") {
+        RebaseAction::Skip { cleanup_backups }
+    } else if args.get_flag("abort_rebase") {
+        RebaseAction::Abort
+    } else if args.get_flag("quit_rebase") {
+        RebaseAction::Quit
+    } else {
+        let squashed_merge_handling =
+            match args.get_one::<String>("squashed_merge").map(String::as_str) {
+                Some("skip") => SquashedRebaseHandling::Skip,
+                Some("rebase") => SquashedRebaseHandling::Rebase,
+                _ => SquashedRebaseHandling::Reset,
+            };
+        RebaseAction::Start(RebaseOptions {
+            step_rebase: args.get_flag("step"),
+            ignore_root: args.get_flag("ignore_root"),
+            squashed_merge_handling,
+            cleanup_backups,
+            no_fork_point: args.get_flag("no_fork_point"),
+        })
+    }
+}
+
+fn command() -> Command {
     let init_subcommand = Command::new("init")
         .about("Initialize the current branch to a chain.")
         .arg(
@@ -547,5 +679,4 @@ Examples:
         .subcommand(Command::new("last").about("Switch to the last branch of the chain."))
         .subcommand(Command::new("next").about("Switch to the next branch of the chain."))
         .subcommand(Command::new("prev").about("Switch to the previous branch of the chain."))
-        .get_matches_from(arguments)
 }

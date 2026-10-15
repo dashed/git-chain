@@ -5,6 +5,7 @@ use clap::ArgMatches;
 use colored::*;
 use git2::Error;
 
+use crate::cli::{CommandRequest, MergeRequest, RebaseAction};
 use crate::git_chain::GitChain;
 use crate::types::*;
 use crate::{Branch, Chain};
@@ -72,9 +73,17 @@ pub fn parse_sort_option(
     }
 }
 
-pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
+pub fn run(request: CommandRequest) -> Result<(), Error> {
     let git_chain = GitChain::init()?;
+    match request {
+        CommandRequest::Merge(request) => run_merge(&git_chain, request),
+        CommandRequest::Rebase(action) => run_rebase(&git_chain, action),
+        CommandRequest::Status { show_prs } => git_chain.run_status(show_prs),
+        CommandRequest::Other(command) => run_other(git_chain, command.matches),
+    }
+}
 
+fn run_other(git_chain: GitChain, arg_matches: ArgMatches) -> Result<(), Error> {
     match arg_matches.subcommand() {
         Some(("init", sub_matches)) => {
             // Initialize the current branch to a chain.
@@ -266,66 +275,6 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
                     }
                 }
             };
-        }
-        Some(("rebase", sub_matches)) => {
-            let cleanup_backups = sub_matches.get_flag("cleanup_backups");
-
-            if sub_matches.get_flag("status_rebase") {
-                git_chain.rebase_status()?;
-            } else if sub_matches.get_flag("continue_rebase") {
-                git_chain.rebase_continue(cleanup_backups)?;
-            } else if sub_matches.get_flag("skip_rebase") {
-                git_chain.rebase_skip(cleanup_backups)?;
-            } else if sub_matches.get_flag("abort_rebase") {
-                git_chain.rebase_abort()?;
-            } else if sub_matches.get_flag("quit_rebase") {
-                // Dispatched before the chain lookup below: --quit must work even when the
-                // current branch is not part of a chain.
-                git_chain.rebase_quit()?;
-            } else {
-                // Rebase all branches for the current chain.
-                let step_rebase = sub_matches.get_flag("step");
-
-                // Before resolving the chain: a paused rebase must be reported even when HEAD
-                // is on a branch outside any chain, which the lookup below would answer with
-                // "not part of any chain" instead.
-                git_chain.ensure_no_chain_rebase_in_progress(step_rebase)?;
-
-                let branch_name = git_chain.get_current_branch_name()?;
-
-                let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                    BranchSearchResult::NotPartOfAnyChain => {
-                        git_chain.display_branch_not_part_of_chain_error(&branch_name);
-                        process::exit(1);
-                    }
-                    BranchSearchResult::Branch(branch) => branch,
-                };
-
-                if Chain::chain_exists(&git_chain, &branch.chain_name)? {
-                    let ignore_root = sub_matches.get_flag("ignore_root");
-                    let no_fork_point = sub_matches.get_flag("no_fork_point");
-                    let squashed_merge_handling = match sub_matches
-                        .get_one::<String>("squashed_merge")
-                        .map(|s| s.as_str())
-                    {
-                        Some("skip") => SquashedRebaseHandling::Skip,
-                        Some("rebase") => SquashedRebaseHandling::Rebase,
-                        _ => SquashedRebaseHandling::Reset,
-                    };
-                    git_chain.rebase(
-                        &branch.chain_name,
-                        step_rebase,
-                        ignore_root,
-                        squashed_merge_handling,
-                        cleanup_backups,
-                        no_fork_point,
-                    )?;
-                } else {
-                    eprintln!("Unable to rebase chain.");
-                    eprintln!("Chain does not exist: {}", branch.chain_name.bold());
-                    process::exit(1);
-                }
-            }
         }
         Some(("backup", _sub_matches)) => {
             // Back up all branches of the current chain.
@@ -678,125 +627,70 @@ pub fn run(arg_matches: ArgMatches) -> Result<(), Error> {
             let draft = sub_matches.get_flag("draft");
             git_chain.pr(&branch.chain_name, draft)?;
         }
-        Some(("status", sub_matches)) => {
-            let show_prs = sub_matches.get_flag("pr");
-            git_chain.run_status(show_prs)?;
-        }
-        Some(("merge", sub_matches)) => {
-            // Comprehensive merge with enhanced configuration
-            // Determine which chain to use
-            let chain_name = match sub_matches.get_one::<String>("chain").map(|s| s.as_str()) {
-                Some(name) => {
-                    // User specified a chain explicitly
-                    if !Chain::chain_exists(&git_chain, name)? {
-                        eprintln!("Chain does not exist: {}", name.bold());
-                        process::exit(1);
-                    }
-                    name.to_string()
-                }
-                None => {
-                    // Use the chain of the current branch
-                    let branch_name = git_chain.get_current_branch_name()?;
-                    let branch = match Branch::get_branch_with_chain(&git_chain, &branch_name)? {
-                        BranchSearchResult::NotPartOfAnyChain => {
-                            git_chain.display_branch_not_part_of_chain_error(&branch_name);
-                            process::exit(1);
-                        }
-                        BranchSearchResult::Branch(branch) => branch,
-                    };
-
-                    if !Chain::chain_exists(&git_chain, &branch.chain_name)? {
-                        eprintln!("Unable to merge chain.");
-                        eprintln!("Chain does not exist: {}", branch.chain_name.bold());
-                        process::exit(1);
-                    }
-
-                    branch.chain_name
-                }
-            };
-
-            // Build merge options based on command line flags
-            let mut merge_flags = Vec::new();
-
-            // Handle git merge flags
-            if sub_matches.get_flag("no_ff") {
-                merge_flags.push("--no-ff".to_string());
-            } else if sub_matches.get_flag("ff_only") {
-                merge_flags.push("--ff-only".to_string());
-            }
-
-            if sub_matches.get_flag("squash") {
-                merge_flags.push("--squash".to_string());
-            }
-
-            if let Some(strategy) = sub_matches
-                .get_one::<String>("strategy")
-                .map(|s| s.as_str())
-            {
-                merge_flags.push(format!("--strategy={}", strategy));
-            }
-
-            if let Some(strategy_options) = sub_matches.get_many::<String>("strategy_option") {
-                for option in strategy_options {
-                    merge_flags.push(format!("--strategy-option={}", option));
-                }
-            }
-
-            // Determine squashed merge handling
-            let squashed_merge_handling = match sub_matches
-                .get_one::<String>("squashed_merge")
-                .map(|s| s.as_str())
-            {
-                Some("reset") => SquashedMergeHandling::Reset,
-                Some("skip") => SquashedMergeHandling::Skip,
-                Some("merge") => SquashedMergeHandling::Merge,
-                _ => SquashedMergeHandling::Reset, // Default
-            };
-
-            // Determine report level
-            let report_level = match sub_matches
-                .get_one::<String>("report_level")
-                .map(|s| s.as_str())
-            {
-                Some("minimal") => ReportLevel::Minimal,
-                Some("standard") => ReportLevel::Standard,
-                Some("detailed") => ReportLevel::Detailed,
-                _ => {
-                    if sub_matches.get_flag("no_report") {
-                        ReportLevel::Minimal
-                    } else if sub_matches.get_flag("detailed_report") {
-                        ReportLevel::Detailed
-                    } else {
-                        ReportLevel::Standard
-                    }
-                }
-            };
-
-            // Build the full options struct
-            let options = MergeOptions {
-                ignore_root: sub_matches.get_flag("ignore_root"),
-                merge_flags,
-                // `--fork-point` is the explicit spelling of the default; clap rejects it
-                // alongside `--no-fork-point`, so either flag alone decides the answer.
-                use_fork_point: sub_matches.get_flag("fork_point")
-                    || !sub_matches.get_flag("no_fork_point"),
-                squashed_merge_handling,
-                verbose: sub_matches.get_flag("verbose"),
-                return_to_original: !sub_matches.get_flag("stay"),
-                simple_mode: sub_matches.get_flag("simple"),
-                report_level,
-            };
-
-            // Execute the merge with the configured options
-            git_chain.merge_chain_with_options(&chain_name, options)?;
-        }
-        // No subcommand: display the status of the current branch and its chain.
-        // clap rejects unknown subcommands before this point, so the only value
-        // reaching this arm is None.
+        // Keep the legacy fallback while the remaining commands migrate to typed requests.
         _ => {
             git_chain.run_status(false)?;
         }
     }
 
     Ok(())
+}
+
+fn run_rebase(git_chain: &GitChain, action: RebaseAction) -> Result<(), Error> {
+    match action {
+        RebaseAction::Status => git_chain.rebase_status(),
+        RebaseAction::Continue { cleanup_backups } => git_chain.rebase_continue(cleanup_backups),
+        RebaseAction::Skip { cleanup_backups } => git_chain.rebase_skip(cleanup_backups),
+        RebaseAction::Abort => git_chain.rebase_abort(),
+        // Recovery must dispatch before chain lookup, even outside the original chain.
+        RebaseAction::Quit => git_chain.rebase_quit(),
+        RebaseAction::Start(options) => {
+            // Check paused state before lookup, including when HEAD is outside any chain.
+            git_chain.ensure_no_chain_rebase_in_progress(options.step_rebase)?;
+            let branch_name = git_chain.get_current_branch_name()?;
+            let branch = match Branch::get_branch_with_chain(git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+            if Chain::chain_exists(git_chain, &branch.chain_name)? {
+                git_chain.rebase(&branch.chain_name, options)
+            } else {
+                eprintln!("Unable to rebase chain.");
+                eprintln!("Chain does not exist: {}", branch.chain_name.bold());
+                process::exit(1);
+            }
+        }
+    }
+}
+
+fn run_merge(git_chain: &GitChain, request: MergeRequest) -> Result<(), Error> {
+    let chain_name = match request.chain_name {
+        Some(name) => {
+            if !Chain::chain_exists(git_chain, &name)? {
+                eprintln!("Chain does not exist: {}", name.bold());
+                process::exit(1);
+            }
+            name
+        }
+        None => {
+            let branch_name = git_chain.get_current_branch_name()?;
+            let branch = match Branch::get_branch_with_chain(git_chain, &branch_name)? {
+                BranchSearchResult::NotPartOfAnyChain => {
+                    git_chain.display_branch_not_part_of_chain_error(&branch_name);
+                    process::exit(1);
+                }
+                BranchSearchResult::Branch(branch) => branch,
+            };
+            if !Chain::chain_exists(git_chain, &branch.chain_name)? {
+                eprintln!("Unable to merge chain.");
+                eprintln!("Chain does not exist: {}", branch.chain_name.bold());
+                process::exit(1);
+            }
+            branch.chain_name
+        }
+    };
+    git_chain.merge_chain_with_options(&chain_name, request.options)
 }
