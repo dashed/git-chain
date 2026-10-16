@@ -333,3 +333,146 @@ printf 'no saved session\n' > "$common/executor-step-hook.txt"
         "no saved session\n"
     );
 }
+
+#[test]
+fn resume_entries_checkpoint_deleted_pending_members_before_replaying_any_branch() {
+    for entry in &ENTRIES[1..] {
+        let mut fixture = Fixture::new(&format!("resume_deleted_preflight_{}", entry.name));
+        // A missing later member must be checkpointed even if an earlier replay fails.
+        let second_tip = fixture.oid("second").to_string();
+        fixture.state["branches"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name": "deleted", "parent": "second", "status": "pending"
+            }));
+        fixture.state["original_refs"]["deleted"] = json!(second_tip);
+        fixture.state["merge_bases"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(second_tip));
+        fixture.state["total_count"] = json!(3);
+        fixture.save(entry.first_status.unwrap());
+        fixture.hook(
+            r#"#!/bin/sh
+common=$(git rev-parse --git-common-dir) || exit 2
+cp "$common/chain-rebase-state.json" "$common/resume-deleted-observed.json" || exit 3
+exit 9
+"#,
+        );
+        let before = [fixture.oid("first"), fixture.oid("second")];
+        let output = run_test_bin(&fixture.path, entry.args.iter().copied());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!(
+            "ENTRY: {}\nSTDOUT: {stdout}\nSTDERR: {stderr}\nSTATUS: {}",
+            entry.name, output.status
+        );
+        // assert!(false, "DEBUG STOP: deleted member, entry={}, output={output:?}", entry.name);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let missing = stdout
+            .find("Branch 'deleted' no longer exists, skipping")
+            .unwrap();
+        let banner = stdout
+            .find("Continuing chain rebase for chain executor...")
+            .unwrap();
+        let progress = stdout
+            .find(&format!("[{}/3] Rebasing", entry.target + 1))
+            .unwrap();
+        assert!(
+            missing < banner,
+            "deleted-member warning must precede the banner: {stdout}"
+        );
+        assert!(
+            banner < progress,
+            "banner must precede branch replay: {stdout}"
+        );
+        assert!(!stdout.contains("Rebase Summary"), "{stdout}");
+        assert!(stderr.contains(entry.rebase_error), "{stderr}");
+        let observed = fixture.read_json("resume-deleted-observed.json");
+        let saved = fixture.read_json("chain-rebase-state.json");
+        assert_eq!(observed["branches"][2]["status"], "skipped");
+        assert_eq!(observed["branches"][entry.target]["status"], "in_progress");
+        assert_eq!(saved["branches"][2]["status"], "skipped");
+        assert_eq!(saved["branches"][entry.target]["status"], "failed");
+        assert_eq!([fixture.oid("first"), fixture.oid("second")], before);
+        assert_eq!(get_current_branch_name(&fixture.repo), entry.head);
+    }
+}
+
+#[test]
+fn resume_completion_keeps_success_when_backup_cleanup_and_final_checkout_fail() {
+    for entry in &ENTRIES[1..] {
+        let mut fixture = Fixture::new(&format!("resume_completion_warnings_{}", entry.name));
+        let before = [fixture.oid("first"), fixture.oid("second")];
+        let commit = fixture.repo.find_commit(before[0]).unwrap();
+        let backup = "backup-executor/first";
+        fixture.repo.branch(backup, &commit, false).unwrap();
+        fixture
+            .repo
+            .branch("backup-executor/manual", &commit, false)
+            .unwrap();
+        // A real ref lock refuses cleanup, and the original branch disappeared while paused.
+        fs::write(
+            fixture
+                .repo
+                .path()
+                .join(format!("refs/heads/{backup}.lock")),
+            "held by test",
+        )
+        .unwrap();
+        fixture.state["created_backups"] = json!([backup]);
+        fixture.state["branches"][1]["status"] = json!("completed");
+        fixture.state["original_branch"] = json!("missing-original");
+        let first_status = match entry.name {
+            "continue" => "completed",
+            "skip" => "in_progress",
+            name => panic!("unexpected resume entry {name}"),
+        };
+        fixture.save(first_status);
+        let output = run_test_bin(
+            &fixture.path,
+            ["rebase", entry.args[1], "--cleanup-backups"],
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!(
+            "ENTRY: {}\nSTDOUT: {stdout}\nSTDERR: {stderr}\nSTATUS: {}",
+            entry.name, output.status
+        );
+        // assert!(false, "DEBUG STOP: completion warnings, entry={}, output={output:?}", entry.name);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let summary = stdout.find("Rebase Summary").unwrap();
+        let returning = stdout
+            .find("Switching back to branch: missing-original")
+            .unwrap();
+        assert!(
+            summary < returning,
+            "summary must precede return to the original branch: {stdout}"
+        );
+        assert!(
+            stdout.contains("Could not switch back to missing-original"),
+            "{stdout}"
+        );
+        assert!(
+            stderr.contains(&format!("Failed to delete {backup}:")),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains(".lock"),
+            "cleanup should report the held ref lock: {stderr}"
+        );
+        assert!(
+            !fixture
+                .repo
+                .commondir()
+                .join("chain-rebase-state.json")
+                .exists(),
+            "completed state must be cleared despite both warnings"
+        );
+        assert_eq!(get_current_branch_name(&fixture.repo), "second");
+        assert_eq!(fixture.oid(backup), before[0]);
+        assert_eq!(fixture.oid("backup-executor/manual"), before[0]);
+        assert_eq!([fixture.oid("first"), fixture.oid("second")], before);
+    }
+}

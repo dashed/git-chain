@@ -9,7 +9,7 @@ use super::rebase_executor::{BranchExecution, BranchOutcome, BranchRebase};
 use super::GitChain;
 use crate::rebase_state::{
     delete_state, is_usable_commit_id, read_state, read_state_for_resume, state_exists,
-    state_file_path_for_read, write_state, STATE_VERSION,
+    state_file_path_for_read, write_state, ResumePlan, STATE_VERSION,
 };
 use crate::types::{
     BranchRebaseStatus, BranchState, ChainRebaseState, RebaseOptions, RebaseStateOptions,
@@ -637,22 +637,7 @@ impl GitChain {
             None => resume_from,
         };
 
-        let squashed_merge_handling = plan.squashed_merge_handling();
-        let chain_name = state.chain_name.clone();
-
-        // Validate pending branches still exist
-        for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
-            if state.branches[i].status != BranchRebaseStatus::Pending {
-                continue;
-            }
-            if !self.git_local_branch_exists(planned.name())? {
-                println!(
-                    "⚠️  Branch '{}' no longer exists, skipping",
-                    planned.name().bold()
-                );
-                self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Skipped)?;
-            }
-        }
+        self.skip_missing_pending_branches(&mut state, &plan, resume_from)?;
 
         // 7. Resume the rebase loop from resume_from
         println!(
@@ -668,61 +653,8 @@ impl GitChain {
             );
         }
 
-        for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
-            if state.branches[i].status != BranchRebaseStatus::Pending {
-                continue;
-            }
-
-            let replay = BranchRebase {
-                chain_name: &chain_name,
-                name: planned.name(),
-                parent: planned.parent(),
-                frozen_base: planned.frozen_base(),
-                squashed_merge_handling,
-                no_fork_point: state.options.no_fork_point,
-            };
-            println!();
-            println!(
-                "📌 [{}/{}] Rebasing {} onto {}...",
-                i + 1,
-                state.total_count,
-                replay.name.bold(),
-                replay.parent.bold()
-            );
-            self.execute_rebase_branch(
-                replay,
-                BranchExecution::Resume {
-                    state: &mut state,
-                    index: i,
-                },
-            )
-            .map_err(|failure| self.resumed_branch_failure(failure, replay))?;
-        }
-
-        // Print summary and clean up
-        self.print_rebase_summary(&state);
-        if cleanup_backups {
-            self.cleanup_backup_branches(&state.created_backups);
-        }
-        self.clear_state_after_success();
-
-        // Return to original branch
-        let current_branch = self.get_current_branch_name()?;
-        if current_branch != state.original_branch {
-            println!();
-            println!("Switching back to branch: {}", state.original_branch.bold());
-            // The rebase itself is done; failing to switch back must not turn a successful
-            // run into a non-zero exit.
-            if let Err(e) = self.checkout_branch(&state.original_branch) {
-                println!(
-                    "  ⚠️  Could not switch back to {}: {}",
-                    state.original_branch.bold(),
-                    e
-                );
-            }
-        }
-
-        Ok(())
+        self.run_pending_branches(&mut state, &plan, resume_from)?;
+        self.finish_resumed_rebase(&state, cleanup_backups)
     }
 
     /// Helper to update branch state directly in a mutable state reference and persist.
@@ -857,10 +789,25 @@ impl GitChain {
             idx + 1
         };
 
-        let squashed_merge_handling = plan.squashed_merge_handling();
-        let chain_name = state.chain_name.clone();
+        self.skip_missing_pending_branches(&mut state, &plan, resume_from)?;
 
-        // Validate pending branches still exist
+        // 7. Resume the rebase loop from the next pending branch
+        println!(
+            "Continuing chain rebase for chain {}...",
+            state.chain_name.bold()
+        );
+
+        self.run_pending_branches(&mut state, &plan, resume_from)?;
+        self.finish_resumed_rebase(&state, cleanup_backups)
+    }
+
+    /// Checkpoints missing pending members before any surviving branch is replayed.
+    fn skip_missing_pending_branches(
+        &self,
+        state: &mut ChainRebaseState,
+        plan: &ResumePlan,
+        resume_from: usize,
+    ) -> Result<(), Error> {
         for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
             if state.branches[i].status != BranchRebaseStatus::Pending {
                 continue;
@@ -870,15 +817,22 @@ impl GitChain {
                     "⚠️  Branch '{}' no longer exists, skipping",
                     planned.name().bold()
                 );
-                self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Skipped)?;
+                self.update_branch_state_in(state, i, BranchRebaseStatus::Skipped)?;
             }
         }
 
-        // 7. Resume the rebase loop from the next pending branch
-        println!(
-            "Continuing chain rebase for chain {}...",
-            state.chain_name.bold()
-        );
+        Ok(())
+    }
+
+    /// Replays the remaining pending members using their frozen plan and current statuses.
+    fn run_pending_branches(
+        &self,
+        state: &mut ChainRebaseState,
+        plan: &ResumePlan,
+        resume_from: usize,
+    ) -> Result<(), Error> {
+        let squashed_merge_handling = plan.squashed_merge_handling();
+        let chain_name = state.chain_name.clone();
 
         for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
             if state.branches[i].status != BranchRebaseStatus::Pending {
@@ -901,18 +855,21 @@ impl GitChain {
                 replay.name.bold(),
                 replay.parent.bold()
             );
-            self.execute_rebase_branch(
-                replay,
-                BranchExecution::Resume {
-                    state: &mut state,
-                    index: i,
-                },
-            )
-            .map_err(|failure| self.resumed_branch_failure(failure, replay))?;
+            self.execute_rebase_branch(replay, BranchExecution::Resume { state, index: i })
+                .map_err(|failure| self.resumed_branch_failure(failure, replay))?;
         }
 
+        Ok(())
+    }
+
+    /// Completes a resumed run only after every pending branch has finished successfully.
+    fn finish_resumed_rebase(
+        &self,
+        state: &ChainRebaseState,
+        cleanup_backups: bool,
+    ) -> Result<(), Error> {
         // Print summary and clean up
-        self.print_rebase_summary(&state);
+        self.print_rebase_summary(state);
         if cleanup_backups {
             self.cleanup_backup_branches(&state.created_backups);
         }

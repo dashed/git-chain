@@ -7,7 +7,7 @@ use crate::executable_name;
 use crate::types::ChainRebaseState;
 
 mod plan;
-use plan::ResumePlan;
+pub(crate) use plan::ResumePlan;
 
 /// Schema version this build writes and accepts.
 pub const STATE_VERSION: u32 = 1;
