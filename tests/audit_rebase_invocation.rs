@@ -29,7 +29,7 @@
 //! `<upstream>`: it layers it on as a negative ref (`^restrict_revision`) on top of the real
 //! upstream (`builtin/rebase.c:296-311`).
 //!
-//! The invocation is now built by `chain_rebase_command`, which passes the parent *ref* as
+//! The invocation is now built by `RebaseCommands::build`, which passes the parent *ref* as
 //! `<upstream>` and adds `--fork-point` — restoring the skip while replaying the same window
 //! — whenever git's fork-point calculation agrees with the SHA pre-computed before any branch
 //! moved. When it disagrees or fails, the frozen SHA form is used unchanged.
@@ -1154,7 +1154,7 @@ fn audit_f4_rebase_merges_config_cannot_change_chain_semantics() {
 
 /// F6: `--no-fork-point` opts out of git's reflog-based fork-point calculation entirely.
 ///
-/// The guard in `chain_rebase_command` already falls back to the frozen SHA when git's
+/// The guard in `RebaseCommands::build` already falls back to the frozen SHA when git's
 /// calculation disagrees, but there was no way to say "don't consult the reflog at all" —
 /// which is what you want after a fresh clone, or once the reflog has been expired or
 /// rewritten. The flag forces the frozen form for every branch, whatever the reflog says.

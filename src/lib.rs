@@ -8,7 +8,9 @@ pub mod cli;
 mod commands;
 mod error;
 mod git_chain;
+pub mod process;
 mod rebase_state;
+pub mod repository;
 mod types;
 
 pub(crate) use branch::Branch;

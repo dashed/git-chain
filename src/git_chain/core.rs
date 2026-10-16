@@ -7,6 +7,8 @@ use git2::{BranchType, Config, ConfigLevel, Error, ErrorClass, ErrorCode, Object
 use regex::Regex;
 
 use super::GitChain;
+use crate::process::SystemProcessRunner;
+use crate::repository::{rebase::RebaseCommands, RepoContext};
 use crate::types::*;
 use crate::{executable_name, Branch, Chain};
 
@@ -45,9 +47,19 @@ impl GitChain {
             process::exit(1);
         }
 
+        let command_dir = std::env::current_dir().map_err(|e| {
+            Error::from_str(&format!(
+                "Unable to get repository command directory: {}",
+                e
+            ))
+        })?;
+        let context = RepoContext::from_repository(&repo, command_dir).map_err(|e| {
+            Error::from_str(&format!("Unable to capture repository context: {}", e))
+        })?;
         let git_chain = GitChain {
             repo,
             executable_name: name_of_current_executable,
+            rebase_commands: RebaseCommands::new(context, SystemProcessRunner),
         };
         Ok(git_chain)
     }

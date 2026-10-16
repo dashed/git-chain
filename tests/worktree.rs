@@ -5,8 +5,8 @@ use std::fs;
 
 use common::{
     checkout_branch, commit_all, create_branch, create_new_file, first_commit_all,
-    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin_expect_err,
-    run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
+    generate_path_to_repo, get_current_branch_name, run_git_command, run_test_bin,
+    run_test_bin_expect_err, run_test_bin_expect_ok, setup_git_repo, teardown_git_repo,
 };
 
 // Regression tests for https://github.com/dashed/git-chain/issues/48
@@ -581,4 +581,80 @@ fn commands_refuse_a_branch_being_rebased_in_another_worktree() {
 
     fs::remove_dir_all(&worktree_dir).ok();
     teardown_git_repo(repo_name);
+}
+
+#[test]
+fn rebase_runs_from_nested_directory_in_linked_worktree() {
+    let name = "rebase_runner_linked_subdirectory";
+    let repo = setup_git_repo(name);
+    let path = generate_path_to_repo(name);
+    fs::create_dir(path.join("nested")).unwrap();
+    create_new_file(&path.join("nested"), "keep.txt", "shared directory");
+    first_commit_all(&repo, "base");
+    create_branch(&repo, "first");
+    checkout_branch(&repo, "first");
+    create_new_file(&path, "first.txt", "first branch");
+    commit_all(&repo, "first work");
+    let first_before = repo.head().unwrap().target().unwrap();
+    create_branch(&repo, "second");
+    checkout_branch(&repo, "second");
+    create_new_file(&path, "second.txt", "second branch");
+    commit_all(&repo, "second work");
+    let second_before = repo.head().unwrap().target().unwrap();
+    run_test_bin_expect_ok(
+        &path,
+        ["setup", "runner-chain", "master", "first", "second"],
+    );
+    checkout_branch(&repo, "master");
+    create_new_file(&path, "upstream.txt", "upstream work");
+    commit_all(&repo, "advance root");
+    let root_tip = repo.head().unwrap().target().unwrap();
+
+    let linked_path = std::env::current_dir()
+        .unwrap()
+        .join(generate_path_to_repo(format!("{name}_linked tree")));
+    fs::remove_dir_all(&linked_path).ok();
+    let worktree = run_git_command(
+        &path,
+        ["worktree", "add", linked_path.to_str().unwrap(), "first"],
+    );
+    assert!(worktree.status.success(), "{worktree:?}");
+    let nested = linked_path.join("nested");
+    let output = run_test_bin(&nested, ["rebase"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!(
+        "STDOUT: {stdout}\nSTDERR: {stderr}\nSTATUS: {}",
+        output.status
+    );
+    // assert!(false, "DEBUG STOP: output={output:?}");
+    assert!(output.status.success(), "{output:?}");
+    assert!(stdout.contains("Rebased: 2"), "{stdout}");
+    assert!(!stderr.contains("fatal:"), "{stderr}");
+    assert!(!stderr.contains("error:"), "{stderr}");
+    let linked_repo = git2::Repository::open(&linked_path).unwrap();
+    assert_eq!(get_current_branch_name(&linked_repo), "first");
+    assert_eq!(get_current_branch_name(&repo), "master");
+    assert_eq!(repo.head().unwrap().target().unwrap(), root_tip);
+    let first_after = repo
+        .find_branch("first", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap();
+    let second_after = repo
+        .find_branch("second", git2::BranchType::Local)
+        .unwrap()
+        .get()
+        .target()
+        .unwrap();
+    assert_ne!(first_after, first_before);
+    assert_ne!(second_after, second_before);
+    assert!(repo.graph_descendant_of(first_after, root_tip).unwrap());
+    assert!(repo.graph_descendant_of(second_after, first_after).unwrap());
+    assert!(repo.statuses(None).unwrap().is_empty());
+    assert!(linked_repo.statuses(None).unwrap().is_empty());
+    assert!(!repo.commondir().join("chain-rebase-state.json").exists());
+    fs::remove_dir_all(&linked_path).ok();
+    teardown_git_repo(name);
 }
