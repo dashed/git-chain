@@ -5,8 +5,8 @@ use std::process::Command;
 use colored::*;
 use git2::{Error, RepositoryState};
 
+use super::rebase_executor::{BranchExecution, BranchOutcome, BranchRebase};
 use super::GitChain;
-use crate::error::ErrorExt;
 use crate::rebase_state::{
     delete_state, is_usable_commit_id, read_state, read_state_for_resume, state_exists,
     state_file_path_for_read, write_state, STATE_VERSION,
@@ -168,189 +168,26 @@ impl GitChain {
                 continue;
             }
 
-            // git rebase --onto <onto> <upstream> <branch>
-            // git rebase --onto parent_branch fork_point branch.name
-
-            // A branch grabbed by another worktree after the pre-flight (or between a pause
-            // and a resume) fails here. Treat it like any other clean failure: mark the
-            // branch, keep the state, and say how to get back.
-            if let Err(e) = self.checkout_branch(&branch.branch_name) {
-                let mut message = e.message().to_string();
-                if !step_rebase {
-                    self.update_branch_state(index, BranchRebaseStatus::Failed)?;
-                    message.push_str("\n\n");
-                    message.push_str(&self.rebase_failure_advice());
-                }
-                let _ = self.checkout_branch(&orig_branch);
-                return Err(Error::from_str(&message));
-            }
-
-            let before_sha1 = self.get_commit_hash_of_head()?;
-
-            let common_point = &common_ancestors[index];
-
-            // check if current branch is squashed merged to prev_branch_name
-            if self.is_squashed_merged(common_point, prev_branch_name, &branch.branch_name)? {
-                match squashed_merge_handling {
-                    SquashedRebaseHandling::Skip => {
-                        println!();
-                        println!(
-                            "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
-                            branch.branch_name.bold(),
-                            prev_branch_name.bold()
-                        );
-                        if !step_rebase {
-                            self.update_branch_state(index, BranchRebaseStatus::Skipped)?;
-                        }
-                        continue;
-                    }
-                    SquashedRebaseHandling::Rebase => {
-                        println!();
-                        println!(
-                            "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
-                            branch.branch_name.bold(),
-                            prev_branch_name.bold()
-                        );
-                        // Fall through to normal rebase below
-                    }
-                    SquashedRebaseHandling::Reset => {
-                        println!();
-                        println!(
-                            "⚠️  Branch {} is detected to be squashed and merged onto {}.",
-                            branch.branch_name.bold(),
-                            prev_branch_name.bold()
-                        );
-
-                        // Create backup before destructive reset
-                        branch.backup(self)?;
-                        let backup_name = format!("backup-{}/{}", chain_name, branch.branch_name);
-                        println!("📦 Created backup branch: {}", backup_name.bold());
-                        if !step_rebase {
-                            self.record_created_backup(&backup_name)?;
-                        }
-
-                        let command = format!("git reset --hard {}", prev_branch_name);
-
-                        // git reset --hard <prev_branch_name>
-                        let output = Command::new("git")
-                            .arg("reset")
-                            .arg("--hard")
-                            .arg(prev_branch_name)
-                            .output()
-                            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
-
-                        if !output.status.success() {
-                            let _ = self.checkout_branch(&orig_branch);
-                            return Err(Error::from_str(&format!("Unable to run: {}", command)));
-                        }
-
-                        println!(
-                            "Resetting branch {} to {}",
-                            branch.branch_name.bold(),
-                            prev_branch_name.bold()
-                        );
-                        println!("{}", command);
-
-                        if !step_rebase {
-                            self.update_branch_state(index, BranchRebaseStatus::SquashReset)?;
-                        }
-                        continue;
-                    }
-                }
-            }
-
-            // Mark the branch before the rebase runs, so a process killed mid-branch leaves
-            // a state that says so. `--status` then shows it, and `--continue`/`--skip` can
-            // act on it instead of mistaking it for untouched work (REBASE_AUDIT M3).
-            if !step_rebase {
-                self.update_branch_state(index, BranchRebaseStatus::InProgress)?;
-            }
-
-            let (command, rebase_command) = self.rebase_commands.build(
-                prev_branch_name,
-                common_point,
-                &branch.branch_name,
-                !no_fork_point,
-            );
-
-            let output = self
-                .rebase_commands
-                .execute(&rebase_command)
-                .unwrap_or_else(|_| panic!("Unable to run: {}", command));
-
-            println!();
-            println!("{}", command);
-
-            // ensure repository is in a clean state
-            match self.repo.state() {
-                RepositoryState::Clean => {
-                    if !output.status.success() {
-                        io::stdout().write_all(&output.stdout).unwrap();
-                        io::stderr().write_all(&output.stderr).unwrap();
-
-                        let mut message = Error::git_command_failed(
-                            command,
-                            output.status.code().unwrap_or(1),
-                            String::from_utf8_lossy(&output.stdout).to_string(),
-                            String::from_utf8_lossy(&output.stderr).to_string(),
-                        )
-                        .message()
-                        .to_string();
-
-                        // The state file holds the only record of the pre-rebase OIDs, and
-                        // earlier branches of the chain have already been rewritten. Keep it,
-                        // as git keeps its own rebase state on failure.
-                        if !step_rebase {
-                            self.update_branch_state(index, BranchRebaseStatus::Failed)?;
-                            message.push_str("\n\n");
-                            message.push_str(&self.rebase_failure_advice());
-                        }
-
-                        let _ = self.checkout_branch(&orig_branch);
-                        return Err(Error::from_str(&message));
-                    }
-                    io::stdout().write_all(&output.stdout).unwrap();
-                    io::stderr().write_all(&output.stderr).unwrap();
-
-                    let after_sha1 = self.get_commit_hash_of_head()?;
-                    let moved = before_sha1 != after_sha1;
-
-                    if moved {
-                        num_of_rebase_operations += 1;
-                    }
-
-                    // A branch that did not move was already on its parent. Recording it as
-                    // "Completed" made the summary claim it had been rebased (REBASE_AUDIT M6).
-                    if !step_rebase {
-                        let status = if moved {
-                            BranchRebaseStatus::Completed
-                        } else {
-                            BranchRebaseStatus::UpToDate
-                        };
-                        self.update_branch_state(index, status)?;
-                    }
-                    // go ahead to rebase next branch.
-                }
-                _ => {
-                    if !step_rebase {
-                        self.update_branch_state(index, BranchRebaseStatus::Conflict)?;
-                    }
-                    return Err(Error::from_str(&format!(
-                        "🛑 Unable to completely rebase {} to {}\n\
-                         ⚠️  Resolve conflicts, then run:\n\
-                         \x20  1. git add <resolved files>\n\
-                         \x20  2. git rebase --continue\n\
-                         \x20  3. {} rebase --continue\n\
-                         \n\
-                         Or run '{} rebase --skip' to skip this branch,\n\
-                         or  '{} rebase --abort' to cancel and restore all branches.",
-                        branch.branch_name,
-                        prev_branch_name,
-                        self.executable_name,
-                        self.executable_name,
-                        self.executable_name
-                    )));
-                }
+            let replay = BranchRebase {
+                chain_name,
+                name: &branch.branch_name,
+                parent: prev_branch_name,
+                frozen_base: &common_ancestors[index],
+                squashed_merge_handling,
+                no_fork_point,
+            };
+            let execution = if step_rebase {
+                BranchExecution::Step
+            } else {
+                BranchExecution::Initial { index }
+            };
+            let outcome = self
+                .execute_rebase_branch(replay, execution)
+                .map_err(|failure| {
+                    self.initial_branch_failure(failure, replay, &orig_branch, step_rebase)
+                })?;
+            if outcome == BranchOutcome::Rebased {
+                num_of_rebase_operations += 1;
             }
         }
 
@@ -626,31 +463,17 @@ impl GitChain {
         )))
     }
 
-    /// Advice appended to a chain-rebase failure whose repository state stayed clean
-    /// (a refusing hook, a branch checked out in another worktree, ENOSPC, ...).
-    ///
-    /// The chain-rebase state is deliberately kept in that case — it is the only record
-    /// of the pre-rebase OIDs of the branches already rewritten — so `--abort` can still
-    /// put every branch back.
-    fn rebase_failure_advice(&self) -> String {
-        format!(
-            "Chain rebase state saved. Run '{} rebase --abort' to restore all branches to \
-             their original state.",
-            self.executable_name
-        )
-    }
-
     /// Record a backup ref created by this run in the persisted state file.
     ///
     /// `--cleanup-backups` deletes exactly this list, so a backup made by
     /// `git chain backup` or by an earlier run is never touched.
-    fn record_created_backup(&self, backup_name: &str) -> Result<(), Error> {
+    pub(super) fn record_created_backup(&self, backup_name: &str) -> Result<(), Error> {
         let mut state = read_state(&self.repo)?;
         self.record_created_backup_in(&mut state, backup_name)
     }
 
     /// Same, for callers that already hold the state in memory.
-    fn record_created_backup_in(
+    pub(super) fn record_created_backup_in(
         &self,
         state: &mut ChainRebaseState,
         backup_name: &str,
@@ -663,7 +486,7 @@ impl GitChain {
     }
 
     /// Helper to update a branch's status in the persisted state file.
-    fn update_branch_state(
+    pub(super) fn update_branch_state(
         &self,
         branch_index: usize,
         status: BranchRebaseStatus,
@@ -815,6 +638,7 @@ impl GitChain {
         };
 
         let squashed_merge_handling = plan.squashed_merge_handling();
+        let chain_name = state.chain_name.clone();
 
         // Validate pending branches still exist
         for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
@@ -849,158 +673,30 @@ impl GitChain {
                 continue;
             }
 
-            let branch_name = planned.name().to_owned();
-            let parent_name = planned.parent().to_owned();
-            let common_point = planned.frozen_base().to_owned();
-
-            // Progress reporting
+            let replay = BranchRebase {
+                chain_name: &chain_name,
+                name: planned.name(),
+                parent: planned.parent(),
+                frozen_base: planned.frozen_base(),
+                squashed_merge_handling,
+                no_fork_point: state.options.no_fork_point,
+            };
             println!();
             println!(
                 "📌 [{}/{}] Rebasing {} onto {}...",
                 i + 1,
                 state.total_count,
-                branch_name.bold(),
-                parent_name.bold()
+                replay.name.bold(),
+                replay.parent.bold()
             );
-
-            // Same clean-failure handling as the initial run: a branch that cannot be
-            // checked out (held by another worktree, say) keeps the state and the advice.
-            if let Err(e) = self.checkout_branch(&branch_name) {
-                self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
-                return Err(Error::from_str(&format!(
-                    "{}\n\n{}",
-                    e.message(),
-                    self.rebase_failure_advice()
-                )));
-            }
-
-            let before_sha1 = self.get_commit_hash_of_head()?;
-
-            // Check for squash-merge
-            if self.is_squashed_merged(&common_point, &parent_name, &branch_name)? {
-                match squashed_merge_handling {
-                    SquashedRebaseHandling::Skip => {
-                        println!(
-                            "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-                        self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Skipped)?;
-                        continue;
-                    }
-                    SquashedRebaseHandling::Rebase => {
-                        println!(
-                            "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-                        // Fall through to normal rebase
-                    }
-                    SquashedRebaseHandling::Reset => {
-                        println!(
-                            "⚠️  Branch {} is detected to be squashed and merged onto {}.",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-
-                        // Create backup before destructive reset
-                        self.create_backup_branch(&state.chain_name, &branch_name)?;
-                        let backup_name = format!("backup-{}/{}", state.chain_name, branch_name);
-                        println!("📦 Created backup branch: {}", backup_name.bold());
-                        self.record_created_backup_in(&mut state, &backup_name)?;
-
-                        let command = format!("git reset --hard {}", parent_name);
-                        let output = Command::new("git")
-                            .arg("reset")
-                            .arg("--hard")
-                            .arg(parent_name.as_str())
-                            .output()
-                            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
-
-                        if !output.status.success() {
-                            return Err(Error::from_str(&format!("Unable to run: {}", command)));
-                        }
-
-                        println!(
-                            "Resetting branch {} to {}",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-                        println!("{}", command);
-
-                        self.update_branch_state_in(
-                            &mut state,
-                            i,
-                            BranchRebaseStatus::SquashReset,
-                        )?;
-                        continue;
-                    }
-                }
-            }
-
-            // Mark the branch before the rebase runs (REBASE_AUDIT M3).
-            self.update_branch_state_in(&mut state, i, BranchRebaseStatus::InProgress)?;
-
-            let (command, rebase_command) = self.rebase_commands.build(
-                parent_name.as_str(),
-                common_point.as_str(),
-                branch_name.as_str(),
-                !state.options.no_fork_point,
-            );
-
-            let output = self
-                .rebase_commands
-                .execute(&rebase_command)
-                .unwrap_or_else(|_| panic!("Unable to run: {}", command));
-
-            println!("{}", command);
-
-            match self.repo.state() {
-                RepositoryState::Clean => {
-                    if !output.status.success() {
-                        io::stdout().write_all(&output.stdout).unwrap();
-                        io::stderr().write_all(&output.stderr).unwrap();
-                        // Keep the state file: it holds the only record of the pre-rebase
-                        // OIDs, and earlier branches have already been rewritten.
-                        self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
-                        return Err(Error::from_str(&format!(
-                            "🛑 Rebase failed for branch {} onto {}\n\n{}",
-                            branch_name,
-                            parent_name,
-                            self.rebase_failure_advice()
-                        )));
-                    }
-                    io::stdout().write_all(&output.stdout).unwrap();
-                    io::stderr().write_all(&output.stderr).unwrap();
-
-                    let after_sha1 = self.get_commit_hash_of_head()?;
-                    let status = if before_sha1 == after_sha1 {
-                        BranchRebaseStatus::UpToDate
-                    } else {
-                        BranchRebaseStatus::Completed
-                    };
-
-                    self.update_branch_state_in(&mut state, i, status)?;
-                }
-                _ => {
-                    self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Conflict)?;
-                    return Err(Error::from_str(&format!(
-                        "🛑 Unable to completely rebase {} to {}\n\
-                         ⚠️  Resolve conflicts, then run:\n\
-                         \x20  1. git add <resolved files>\n\
-                         \x20  2. git rebase --continue\n\
-                         \x20  3. {} rebase --continue\n\
-                         \n\
-                         Or run '{} rebase --skip' to skip this branch,\n\
-                         or  '{} rebase --abort' to cancel and restore all branches.",
-                        branch_name,
-                        parent_name,
-                        self.executable_name,
-                        self.executable_name,
-                        self.executable_name
-                    )));
-                }
-            }
+            self.execute_rebase_branch(
+                replay,
+                BranchExecution::Resume {
+                    state: &mut state,
+                    index: i,
+                },
+            )
+            .map_err(|failure| self.resumed_branch_failure(failure, replay))?;
         }
 
         // Print summary and clean up
@@ -1030,7 +726,7 @@ impl GitChain {
     }
 
     /// Helper to update branch state directly in a mutable state reference and persist.
-    fn update_branch_state_in(
+    pub(super) fn update_branch_state_in(
         &self,
         state: &mut ChainRebaseState,
         branch_index: usize,
@@ -1162,6 +858,7 @@ impl GitChain {
         };
 
         let squashed_merge_handling = plan.squashed_merge_handling();
+        let chain_name = state.chain_name.clone();
 
         // Validate pending branches still exist
         for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
@@ -1188,158 +885,30 @@ impl GitChain {
                 continue;
             }
 
-            let branch_name = planned.name().to_owned();
-            let parent_name = planned.parent().to_owned();
-            let common_point = planned.frozen_base().to_owned();
-
-            // Progress reporting
+            let replay = BranchRebase {
+                chain_name: &chain_name,
+                name: planned.name(),
+                parent: planned.parent(),
+                frozen_base: planned.frozen_base(),
+                squashed_merge_handling,
+                no_fork_point: state.options.no_fork_point,
+            };
             println!();
             println!(
                 "📌 [{}/{}] Rebasing {} onto {}...",
                 i + 1,
                 state.total_count,
-                branch_name.bold(),
-                parent_name.bold()
+                replay.name.bold(),
+                replay.parent.bold()
             );
-
-            // Same clean-failure handling as the initial run: a branch that cannot be
-            // checked out (held by another worktree, say) keeps the state and the advice.
-            if let Err(e) = self.checkout_branch(&branch_name) {
-                self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
-                return Err(Error::from_str(&format!(
-                    "{}\n\n{}",
-                    e.message(),
-                    self.rebase_failure_advice()
-                )));
-            }
-
-            let before_sha1 = self.get_commit_hash_of_head()?;
-
-            // Check for squash-merge
-            if self.is_squashed_merged(&common_point, &parent_name, &branch_name)? {
-                match squashed_merge_handling {
-                    SquashedRebaseHandling::Skip => {
-                        println!(
-                            "⏭️  Skipping branch {} — detected as squash-merged onto {}.",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-                        self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Skipped)?;
-                        continue;
-                    }
-                    SquashedRebaseHandling::Rebase => {
-                        println!(
-                            "⚠️  Branch {} detected as squash-merged onto {}, but forcing rebase as requested.",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-                        // Fall through to normal rebase
-                    }
-                    SquashedRebaseHandling::Reset => {
-                        println!(
-                            "⚠️  Branch {} is detected to be squashed and merged onto {}.",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-
-                        // Create backup before destructive reset
-                        self.create_backup_branch(&state.chain_name, &branch_name)?;
-                        let backup_name = format!("backup-{}/{}", state.chain_name, branch_name);
-                        println!("📦 Created backup branch: {}", backup_name.bold());
-                        self.record_created_backup_in(&mut state, &backup_name)?;
-
-                        let command = format!("git reset --hard {}", parent_name);
-                        let output = Command::new("git")
-                            .arg("reset")
-                            .arg("--hard")
-                            .arg(parent_name.as_str())
-                            .output()
-                            .unwrap_or_else(|_| panic!("Unable to run: {}", command));
-
-                        if !output.status.success() {
-                            return Err(Error::from_str(&format!("Unable to run: {}", command)));
-                        }
-
-                        println!(
-                            "Resetting branch {} to {}",
-                            branch_name.bold(),
-                            parent_name.bold()
-                        );
-                        println!("{}", command);
-
-                        self.update_branch_state_in(
-                            &mut state,
-                            i,
-                            BranchRebaseStatus::SquashReset,
-                        )?;
-                        continue;
-                    }
-                }
-            }
-
-            // Mark the branch before the rebase runs (REBASE_AUDIT M3).
-            self.update_branch_state_in(&mut state, i, BranchRebaseStatus::InProgress)?;
-
-            let (command, rebase_command) = self.rebase_commands.build(
-                parent_name.as_str(),
-                common_point.as_str(),
-                branch_name.as_str(),
-                !state.options.no_fork_point,
-            );
-
-            let output = self
-                .rebase_commands
-                .execute(&rebase_command)
-                .unwrap_or_else(|_| panic!("Unable to run: {}", command));
-
-            println!("{}", command);
-
-            match self.repo.state() {
-                RepositoryState::Clean => {
-                    if !output.status.success() {
-                        io::stdout().write_all(&output.stdout).unwrap();
-                        io::stderr().write_all(&output.stderr).unwrap();
-                        // Keep the state file: it holds the only record of the pre-rebase
-                        // OIDs, and earlier branches have already been rewritten.
-                        self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Failed)?;
-                        return Err(Error::from_str(&format!(
-                            "🛑 Rebase failed for branch {} onto {}\n\n{}",
-                            branch_name,
-                            parent_name,
-                            self.rebase_failure_advice()
-                        )));
-                    }
-                    io::stdout().write_all(&output.stdout).unwrap();
-                    io::stderr().write_all(&output.stderr).unwrap();
-
-                    let after_sha1 = self.get_commit_hash_of_head()?;
-                    let status = if before_sha1 == after_sha1 {
-                        BranchRebaseStatus::UpToDate
-                    } else {
-                        BranchRebaseStatus::Completed
-                    };
-
-                    self.update_branch_state_in(&mut state, i, status)?;
-                }
-                _ => {
-                    self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Conflict)?;
-                    return Err(Error::from_str(&format!(
-                        "🛑 Unable to completely rebase {} to {}\n\
-                         ⚠️  Resolve conflicts, then run:\n\
-                         \x20  1. git add <resolved files>\n\
-                         \x20  2. git rebase --continue\n\
-                         \x20  3. {} rebase --continue\n\
-                         \n\
-                         Or run '{} rebase --skip' to skip this branch,\n\
-                         or  '{} rebase --abort' to cancel and restore all branches.",
-                        branch_name,
-                        parent_name,
-                        self.executable_name,
-                        self.executable_name,
-                        self.executable_name
-                    )));
-                }
-            }
+            self.execute_rebase_branch(
+                replay,
+                BranchExecution::Resume {
+                    state: &mut state,
+                    index: i,
+                },
+            )
+            .map_err(|failure| self.resumed_branch_failure(failure, replay))?;
         }
 
         // Print summary and clean up
@@ -1545,15 +1114,6 @@ impl GitChain {
             &state.root_branch,
             state.branches.iter().map(|b| b.name.as_str()),
         );
-    }
-
-    /// Create a backup branch for a named branch in a chain.
-    fn create_backup_branch(&self, chain_name: &str, branch_name: &str) -> Result<(), Error> {
-        let (object, _reference) = self.repo.revparse_ext(branch_name)?;
-        let commit = self.repo.find_commit(object.id())?;
-        let backup_branch = format!("backup-{}/{}", chain_name, branch_name);
-        self.repo.branch(&backup_branch, &commit, true)?;
-        Ok(())
     }
 
     /// Delete the backup branches this rebase run created, after it completes.

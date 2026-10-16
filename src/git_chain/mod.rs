@@ -13,3 +13,4 @@ pub struct GitChain {
 mod core;
 mod merge;
 mod operations;
+mod rebase_executor;
