@@ -8,7 +8,8 @@ use git2::{Error, RepositoryState};
 use super::GitChain;
 use crate::error::ErrorExt;
 use crate::rebase_state::{
-    delete_state, read_state, state_exists, state_file_path_for_read, write_state, STATE_VERSION,
+    delete_state, is_usable_commit_id, read_state, read_state_for_resume, state_exists,
+    state_file_path_for_read, write_state, STATE_VERSION,
 };
 use crate::types::{
     BranchRebaseStatus, BranchState, ChainRebaseState, RebaseOptions, RebaseStateOptions,
@@ -722,7 +723,7 @@ impl GitChain {
         }
 
         // 4. Load state
-        let mut state = read_state(&self.repo)?;
+        let (mut state, plan) = read_state_for_resume(&self.repo)?;
         self.validate_chain_unchanged(&state)?;
 
         // 5. Put a branch left `Failed` or `InProgress` back in the queue.
@@ -767,18 +768,17 @@ impl GitChain {
 
                 // Detect external git rebase --abort: if the branch's current OID
                 // matches the original_ref, the user aborted the rebase externally
-                if let Some(original_oid) = state.original_refs.get(branch_name) {
-                    let current_oid = self.get_branch_commit_oid(branch_name)?;
-                    if &current_oid == original_oid {
-                        return Err(Error::from_str(&format!(
-                            "It appears the rebase for branch '{}' was aborted externally \
-                             (via git rebase --abort).\n\
-                             Use '{} rebase --skip' to skip this branch and continue with \
-                             the rest of the chain,\n\
-                             or  '{} rebase --abort' to cancel the entire chain rebase.",
-                            branch_name, self.executable_name, self.executable_name
-                        )));
-                    }
+                let original_oid = plan.branches()[idx].original_tip();
+                let current_oid = self.get_branch_commit_oid(branch_name)?;
+                if current_oid == original_oid {
+                    return Err(Error::from_str(&format!(
+                        "It appears the rebase for branch '{}' was aborted externally \
+                         (via git rebase --abort).\n\
+                         Use '{} rebase --skip' to skip this branch and continue with \
+                         the rest of the chain,\n\
+                         or  '{} rebase --abort' to cancel the entire chain rebase.",
+                        branch_name, self.executable_name, self.executable_name
+                    )));
                 }
 
                 state.branches[idx].status = BranchRebaseStatus::Completed;
@@ -814,22 +814,17 @@ impl GitChain {
             None => resume_from,
         };
 
-        // Parse squashed_merge_handling from state
-        let squashed_merge_handling = match state.options.squashed_merge_handling.as_str() {
-            "skip" => SquashedRebaseHandling::Skip,
-            "rebase" => SquashedRebaseHandling::Rebase,
-            _ => SquashedRebaseHandling::Reset,
-        };
+        let squashed_merge_handling = plan.squashed_merge_handling();
 
         // Validate pending branches still exist
-        for i in resume_from..state.branches.len() {
+        for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
             if state.branches[i].status != BranchRebaseStatus::Pending {
                 continue;
             }
-            if !self.git_local_branch_exists(&state.branches[i].name)? {
+            if !self.git_local_branch_exists(planned.name())? {
                 println!(
                     "⚠️  Branch '{}' no longer exists, skipping",
-                    state.branches[i].name.bold()
+                    planned.name().bold()
                 );
                 self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Skipped)?;
             }
@@ -849,14 +844,14 @@ impl GitChain {
             );
         }
 
-        for i in resume_from..state.branches.len() {
+        for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
             if state.branches[i].status != BranchRebaseStatus::Pending {
                 continue;
             }
 
-            let branch_name = state.branches[i].name.clone();
-            let parent_name = state.branches[i].parent.clone();
-            let common_point = state.merge_bases[i].clone();
+            let branch_name = planned.name().to_owned();
+            let parent_name = planned.parent().to_owned();
+            let common_point = planned.frozen_base().to_owned();
 
             // Progress reporting
             println!();
@@ -1071,7 +1066,7 @@ impl GitChain {
         // 2. Load state and find the branch to skip BEFORE touching anything. Aborting the
         //    git-level rebase first would destroy work even when there is nothing to skip
         //    (REBASE_AUDIT M3).
-        let mut state = read_state(&self.repo)?;
+        let (mut state, plan) = read_state_for_resume(&self.repo)?;
         self.validate_chain_unchanged(&state)?;
 
         let skip_index = state.branches.iter().position(|b| {
@@ -1119,30 +1114,29 @@ impl GitChain {
             // 4. Restore branch to its original position. A failed restore leaves the branch
             //    somewhere the rest of the run would build on, so it is an error rather than a
             //    warning — keep the state so the user can fix it and retry (REBASE_AUDIT M6).
-            if let Some(original_oid) = state.original_refs.get(&branch_name) {
-                let output = Command::new("git")
-                    .arg("update-ref")
-                    .arg("-m")
-                    .arg(format!("chain rebase (skip): restoring {}", branch_name))
-                    .arg(format!("refs/heads/{}", branch_name))
-                    .arg(original_oid)
-                    .output();
+            let original_oid = plan.branches()[idx].original_tip();
+            let output = Command::new("git")
+                .arg("update-ref")
+                .arg("-m")
+                .arg(format!("chain rebase (skip): restoring {}", branch_name))
+                .arg(format!("refs/heads/{}", branch_name))
+                .arg(original_oid)
+                .output();
 
-                let failure = match output {
-                    Ok(result) if result.status.success() => None,
-                    Ok(result) => Some(String::from_utf8_lossy(&result.stderr).trim().to_string()),
-                    Err(e) => Some(e.to_string()),
-                };
+            let failure = match output {
+                Ok(result) if result.status.success() => None,
+                Ok(result) => Some(String::from_utf8_lossy(&result.stderr).trim().to_string()),
+                Err(e) => Some(e.to_string()),
+            };
 
-                if let Some(reason) = failure {
-                    return Err(Error::from_str(&format!(
-                        "🛑 Could not restore {} to its original commit: {}\n\
-                         The branch has not been skipped and the chain rebase state has been \
-                         kept — resolve the problem and run '{} rebase --skip' again, or \
-                         '{} rebase --abort' to cancel the whole rebase.",
-                        branch_name, reason, self.executable_name, self.executable_name
-                    )));
-                }
+            if let Some(reason) = failure {
+                return Err(Error::from_str(&format!(
+                    "🛑 Could not restore {} to its original commit: {}\n\
+                     The branch has not been skipped and the chain rebase state has been \
+                     kept — resolve the problem and run '{} rebase --skip' again, or \
+                     '{} rebase --abort' to cancel the whole rebase.",
+                    branch_name, reason, self.executable_name, self.executable_name
+                )));
             }
 
             // 5. Mark as Skipped
@@ -1167,22 +1161,17 @@ impl GitChain {
             idx + 1
         };
 
-        // Parse squashed_merge_handling from state
-        let squashed_merge_handling = match state.options.squashed_merge_handling.as_str() {
-            "skip" => SquashedRebaseHandling::Skip,
-            "rebase" => SquashedRebaseHandling::Rebase,
-            _ => SquashedRebaseHandling::Reset,
-        };
+        let squashed_merge_handling = plan.squashed_merge_handling();
 
         // Validate pending branches still exist
-        for i in resume_from..state.branches.len() {
+        for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
             if state.branches[i].status != BranchRebaseStatus::Pending {
                 continue;
             }
-            if !self.git_local_branch_exists(&state.branches[i].name)? {
+            if !self.git_local_branch_exists(planned.name())? {
                 println!(
                     "⚠️  Branch '{}' no longer exists, skipping",
-                    state.branches[i].name.bold()
+                    planned.name().bold()
                 );
                 self.update_branch_state_in(&mut state, i, BranchRebaseStatus::Skipped)?;
             }
@@ -1194,14 +1183,14 @@ impl GitChain {
             state.chain_name.bold()
         );
 
-        for i in resume_from..state.branches.len() {
+        for (i, planned) in plan.branches().iter().enumerate().skip(resume_from) {
             if state.branches[i].status != BranchRebaseStatus::Pending {
                 continue;
             }
 
-            let branch_name = state.branches[i].name.clone();
-            let parent_name = state.branches[i].parent.clone();
-            let common_point = state.merge_bases[i].clone();
+            let branch_name = planned.name().to_owned();
+            let parent_name = planned.parent().to_owned();
+            let common_point = planned.frozen_base().to_owned();
 
             // Progress reporting
             println!();
@@ -1712,7 +1701,7 @@ impl GitChain {
                 }
             };
 
-            if !Self::is_restorable_oid(original_oid) {
+            if !is_usable_commit_id(original_oid) {
                 eprintln!(
                     "  ⚠️  Not restoring {}: the recorded original commit {:?} is not a usable \
                      object id",
@@ -1906,16 +1895,6 @@ impl GitChain {
         }
 
         Ok(())
-    }
-
-    /// True when `oid` is a full object id git will accept as a ref *value*.
-    ///
-    /// An all-zero id is git's delete-ref syntax (`git update-ref <ref> 0000…`), so
-    /// restoring one would delete the very branch the abort exists to protect.
-    fn is_restorable_oid(oid: &str) -> bool {
-        (oid.len() == 40 || oid.len() == 64)
-            && oid.chars().all(|c| c.is_ascii_hexdigit())
-            && oid.chars().any(|c| c != '0')
     }
 
     pub fn backup(&self, chain_name: &str) -> Result<(), Error> {

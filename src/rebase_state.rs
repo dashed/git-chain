@@ -6,6 +6,9 @@ use git2::{Error, Repository};
 use crate::executable_name;
 use crate::types::ChainRebaseState;
 
+mod plan;
+use plan::ResumePlan;
+
 /// Schema version this build writes and accepts.
 pub const STATE_VERSION: u32 = 1;
 
@@ -86,6 +89,37 @@ pub fn read_state(repo: &Repository) -> Result<ChainRebaseState, Error> {
     }
 
     Ok(state)
+}
+
+/// Loads a recovery record and admits a complete replay plan before resume can mutate it.
+///
+/// Abort and status deliberately continue using `read_state`; quit never reads the file.
+pub(crate) fn read_state_for_resume(
+    repo: &Repository,
+) -> Result<(ChainRebaseState, ResumePlan), Error> {
+    let state = read_state(repo)?;
+    let plan = ResumePlan::from_state(&state).map_err(|reason| {
+        Error::from_str(&format!(
+            "Invalid chain rebase state in {}: {}.\n\
+             The state file has been kept. Use '{} rebase --abort' to restore branches where \
+             possible, or '{} rebase --quit' to discard the state without touching any branch.",
+            state_file_path_for_read(repo).display(),
+            reason,
+            executable_name(),
+            executable_name(),
+        ))
+    })?;
+    Ok((state, plan))
+}
+
+/// Checks the existing recovery convention for full, nonzero hexadecimal object IDs.
+///
+/// An all-zero value means delete-ref to Git. Keep both stored ID widths supported by the
+/// previous abort guard; checking shape does not claim that Git can resolve the object.
+pub(crate) fn is_usable_commit_id(oid: &str) -> bool {
+    (oid.len() == 40 || oid.len() == 64)
+        && oid.chars().all(|c| c.is_ascii_hexdigit())
+        && oid.chars().any(|c| c != '0')
 }
 
 /// Serializes and writes the chain rebase state to file.
